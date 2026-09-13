@@ -11,13 +11,13 @@ import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { ConnectorCard, type ConnectorCardCopy, ConnectorSummary } from '@/components/ui/connector-card'
 import { getActionStatus, getMcpCatalog, installMcpCatalogEntry, type McpCatalogEntry, setMcpServerEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { connectorText, mcpTargets } from '@/lib/connector-tools'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import { connectorText, mcpTargets } from '@/lib/connector-tools'
 import {
   type ConnectionTargetOutcome,
   respondToConnectionRequest,

@@ -26,9 +26,9 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests } from '@/store/clarify'
-import { $connectionRequests } from '@/store/connection-request'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
+import { $connectionRequests } from '@/store/connection-request'
 import {
   openGatewayForAgent,
   openGatewayForProfile,

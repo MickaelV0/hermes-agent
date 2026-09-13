@@ -10,13 +10,13 @@ import {
   setClarifyRequest,
   warnDroppedChoices
 } from '@/store/clarify'
-import { $gateway } from '@/store/gateway'
 import {
   $connectionRequests,
   clearConnectionRequest,
   normalizeConnectionRequest,
   setConnectionRequest
 } from '@/store/connection-request'
+import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
   $vaultCodeRequests,
