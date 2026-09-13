@@ -359,11 +359,14 @@ export interface VaultCodeRequestPayload {
   site?: string
 }
 
-export interface McpSetupRequestPayload {
-  action?: string
+/** `manage_connections` MCP approval card (`tui_gateway/agent_callbacks.py::connection_callback`). */
+export interface ConnectionRequestPayload {
+  deadline_at: number
+  op_id: string
   reason?: string
   request_id: string
-  server?: string
+  targets: { action: string; kind: string; name: string }[]
+  timeout_seconds?: number
 }
 
 /** Side agents (`tui_gateway/methods_prompt.py::_spawn_side_agent`). */
@@ -407,12 +410,12 @@ export const BACKEND_EVENT_NAMES = [
   'btw.complete',
   'clarify.expire',
   'clarify.request',
+  'connection.expire',
+  'connection.request',
   'cron.changed',
   'error',
   'gateway.ready',
   'layout.apply',
-  'mcp.setup.expire',
-  'mcp.setup.request',
   'message.complete',
   'message.delta',
   'message.interim',
@@ -504,12 +507,12 @@ export interface BackendGatewayEventMap {
   'btw.complete': SideAgentCompletePayload
   'clarify.expire': RequestExpirePayload
   'clarify.request': ClarifyRequestPayload
+  'connection.expire': RequestExpirePayload
+  'connection.request': ConnectionRequestPayload
   'cron.changed': Record<string, unknown>
   error: ErrorPayload
   'gateway.ready': GatewayReadyPayload
   'layout.apply': Record<string, unknown>
-  'mcp.setup.expire': RequestExpirePayload
-  'mcp.setup.request': McpSetupRequestPayload
   'message.complete': MessageCompletePayload
   'message.delta': StreamDeltaPayload
   'message.interim': MessageInterimPayload
