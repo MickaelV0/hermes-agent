@@ -361,7 +361,8 @@ interface PendingClarifyLocation {
 
 function findPendingClarifyLocation(
   messages: ChatMessage[],
-  payload: GatewayEventPayload
+  payload: GatewayEventPayload,
+  toolName = 'clarify'
 ): PendingClarifyLocation | null {
   const stableId = toolId(payload)
   const matchValues = toolPayloadMatchValues(payload)
@@ -374,7 +375,7 @@ function findPendingClarifyLocation(
     for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
       const part = message.parts[partIndex]
 
-      if (part.type !== 'tool-call' || part.toolName !== 'clarify' || part.result !== undefined) {
+      if (part.type !== 'tool-call' || part.toolName !== toolName || part.result !== undefined) {
         continue
       }
 
@@ -511,8 +512,17 @@ export function restorePendingClarifyToolCall(
   payload: GatewayEventPayload,
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
-  const clarifyPayload = { ...payload, name: 'clarify' }
-  const location = findPendingClarifyLocation(messages, clarifyPayload)
+  return restorePendingBlockingToolCall(messages, { ...payload, name: 'clarify' }, occurredAt)
+}
+
+/** Re-arm a blocking tool row (clarify, connection card) from a resume snapshot: mark the
+ *  existing pending part's message live, or project a synthetic row when the transcript lost it. */
+export function restorePendingBlockingToolCall(
+  messages: ChatMessage[],
+  clarifyPayload: GatewayEventPayload & { name: string },
+  occurredAt = Date.now() / 1000
+): PendingClarifyProjection {
+  const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name)
 
   if (location) {
     const message = messages[location.messageIndex]
@@ -542,7 +552,7 @@ export function restorePendingClarifyToolCall(
     return { messages: next, streamId: tail.id }
   }
 
-  const streamId = nextLiveToolId('clarify-message')
+  const streamId = nextLiveToolId(`${clarifyPayload.name}-message`)
 
   return {
     messages: [

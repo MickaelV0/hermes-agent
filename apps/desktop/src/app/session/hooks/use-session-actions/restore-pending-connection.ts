@@ -1,4 +1,4 @@
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type ChatMessage, type GatewayEventPayload, restorePendingBlockingToolCall } from '@/lib/chat-messages'
 import {
   $connectionRequests,
   clearConnectionRequest,
@@ -45,7 +45,7 @@ export function restorePendingConnectionFromSnapshot(
 }
 
 /** Synthetic tool row for a pending operation whose `tool.start` was missed. */
-export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload {
+export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload & { name: string } {
   return {
     args: {
       action: request.targets[0]?.action ?? 'install',
@@ -55,4 +55,12 @@ export function connectionRequestToolPayload(request: ConnectionRequest): Gatewa
     name: 'manage_connections',
     tool_id: request.requestId
   }
+}
+
+/** Layer the pending connection row (if any) over an already-projected transcript. */
+export function projectPendingConnection(
+  messages: ChatMessage[],
+  request: ConnectionRequest | null
+): { messages: ChatMessage[]; streamId: string } | null {
+  return request ? restorePendingBlockingToolCall(messages, connectionRequestToolPayload(request)) : null
 }

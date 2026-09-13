@@ -141,7 +141,7 @@ import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-r
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
-import { restorePendingConnectionFromSnapshot } from './restore-pending-connection'
+import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -338,6 +338,15 @@ interface FreshSessionDraftOptions {
   preserveRoute?: boolean
   replaceRoute?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
+}
+
+/** Session-state patch for a restored blocking prompt row (connection card wins over clarify). */
+function livePromptStreamId(
+  ...projections: ({ streamId: string } | null)[]
+): { awaitingResponse: false; sawAssistantPayload: true; streamId: string } | Record<string, never> {
+  const live = projections.find(Boolean)
+
+  return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
 }
 
 function restorePendingApproval(response: SessionResumeResponse, sessionId: string): boolean {
@@ -1435,8 +1444,16 @@ export function useSessionActions({
                   )
                 : null
 
+              const pendingConnectionProjection = projectPendingConnection(
+                pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? activatedMessages,
+                pendingConnection
+              )
+
               const visibleActivatedMessages =
-                pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? activatedMessages
+                pendingConnectionProjection?.messages ??
+                pendingClarifyProjection?.messages ??
+                clearedClarifyProjection?.messages ??
+                activatedMessages
 
               releaseTranscriptView()
 
@@ -1459,13 +1476,7 @@ export function useSessionActions({
                       acceptedPersistedDisplayTranscript || hasValidProvenance
                         ? (expectedProvenance ?? undefined)
                         : undefined,
-                    ...(pendingClarifyProjection
-                      ? {
-                          awaitingResponse: false,
-                          sawAssistantPayload: true,
-                          streamId: pendingClarifyProjection.streamId
-                        }
-                      : {}),
+                    ...(livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection)),
                     ...(clearedClarifyProjection
                       ? {
                           streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
@@ -1844,8 +1855,16 @@ export function useSessionActions({
             )
           : null
 
+        const pendingConnectionProjection = projectPendingConnection(
+          pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? messagesForView,
+          pendingConnection
+        )
+
         const visibleMessagesForView =
-          pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? messagesForView
+          pendingConnectionProjection?.messages ??
+          pendingClarifyProjection?.messages ??
+          clearedClarifyProjection?.messages ??
+          messagesForView
 
         // The eagerly painted REST page is persisted-display authority: stamp
         // its provenance so the next warm switch to this session paints it
@@ -1887,13 +1906,7 @@ export function useSessionActions({
               : {
                   turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
                 }),
-            ...(pendingClarifyProjection
-              ? {
-                  awaitingResponse: false,
-                  sawAssistantPayload: true,
-                  streamId: pendingClarifyProjection.streamId
-                }
-              : {}),
+            ...(livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection)),
             ...(clearedClarifyProjection
               ? {
                   streamId: resumedRunning ? (clearedClarifyProjection.streamId ?? state.streamId) : null
