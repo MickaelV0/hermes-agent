@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.registry import _tool_module_candidates
+
 REPO = Path(__file__).resolve().parents[2]
 CONTRACT = REPO / "apps" / "shared" / "src" / "gateway-events.json"
 GATEWAY_DIR = REPO / "tui_gateway"
@@ -65,7 +67,7 @@ def emitted_event_names() -> set[str]:
     for src in (REPO / "tools").glob("delegate_tool*.py"):
         names.update(_SUBAGENT_RELAY.findall(_read(src)))
     names.discard("subagent.text")
-    for src in (REPO / "tools").glob("*.py"):
+    for src in _tool_module_candidates(REPO / "tools"):
         names.update(_DESKTOP_UI_EMIT.findall(_read(src)))
     names.update(_BROKER_FRAME.findall(_read(REPO / "gateway" / "browser_control_broker.py")))
     names.update(_SETUP_READY.findall(_read(REPO / "hermes_cli" / "free_tier_bootstrap.py")))
