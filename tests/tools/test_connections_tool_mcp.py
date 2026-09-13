@@ -224,3 +224,15 @@ def test_default_wait_comes_from_the_config_key(monkeypatch):
         manage_connections({"action": "install", "connectors": [_linear()]},
                            connection_callback=lambda p: seen.update(p) or "")
     assert seen["timeout_seconds"] == 77.0
+
+
+def test_settle_reason_comes_from_target_state_not_the_renderer():
+    # Renderer answered one of two targets and claimed all_resolved: the operation is not.
+    answer = json.dumps({"settled_by": "all_resolved", "targets": [{"name": "linear", "status": "declined"}]})
+    out = json.loads(manage_connections(
+        {"action": "install", "connectors": [_linear(), {"name": "figma", "mcp": True}]},
+        connection_callback=lambda payload: answer, wait_seconds=5))
+    assert out["settled_by"] == op.SETTLED_CONTINUE
+    by_name = {t["name"]: t for t in out["targets"]}
+    assert by_name["linear"]["state"] == op.SKIPPED
+    assert by_name["figma"]["state"] == op.NOT_CONNECTED and by_name["figma"]["detail"] == op.SETTLED_CONTINUE

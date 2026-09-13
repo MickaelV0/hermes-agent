@@ -156,14 +156,14 @@ def _unavailable_result(operation: ConnectionOperation) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _apply_answer(operation: ConnectionOperation, raw: str) -> Optional[str]:
-    """Apply the renderer's per-target answer; returns its requested settle reason, if any."""
+def _apply_answer(operation: ConnectionOperation, raw: str) -> str:
+    """Apply the renderer's per-target answer; returns the settle reason the target states imply."""
     try:
         answer = json.loads(raw)
     except (TypeError, ValueError):
-        return None
+        answer = {}
     if not isinstance(answer, dict):
-        return None
+        answer = {}
     for entry in answer.get("targets") or ():
         if not isinstance(entry, dict):
             continue
@@ -173,8 +173,8 @@ def _apply_answer(operation: ConnectionOperation, raw: str) -> Optional[str]:
             continue
         extra = {k: v for k, v in entry.items() if k in ("tools",)}
         operation.record_target(name, state, str(entry.get("detail") or ""), **extra)
-    settled_by = str(answer.get("settled_by") or "")
-    return settled_by if settled_by in (SETTLED_ALL_RESOLVED, SETTLED_CONTINUE) else None
+    # The reason is derived from target state, never taken from the renderer's word.
+    return SETTLED_ALL_RESOLVED if operation.all_resolved else SETTLED_CONTINUE
 
 
 def run_mcp_operation(
@@ -205,7 +205,7 @@ def run_mcp_operation(
 
     settled_by = _apply_answer(operation, raw or "")
     if raw:
-        operation.settle(settled_by or (SETTLED_ALL_RESOLVED if operation.all_resolved else SETTLED_CONTINUE))
+        operation.settle(settled_by)
     else:
         # Empty answer: deadline passed or the turn was interrupted.
         from tools.interrupt import is_interrupted
