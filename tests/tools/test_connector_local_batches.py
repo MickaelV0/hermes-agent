@@ -61,8 +61,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     try:
         for entry in calls:
             if entry["name"] == "manage_connections":
-                # Never deferrable, so never a tool_call underlying: it reaches invoke_tool
-                # directly, and must still find the agent's GUI callback there.
+                # Not deferrable, so it reaches invoke_tool directly and must find the agent callback.
                 name, args, error = entry["name"], entry["arguments"], None
             else:
                 name, args, error = _unwrap_tool_search_call(

@@ -244,8 +244,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'connection.request') {
-    // Python is blocked on connection.respond. Park per-session (like clarify) and upsert a
-    // stable tool row so the card renders even if tool.start was missed.
+    // Park per-session and upsert a stable tool row so the card renders even if tool.start was missed.
     const request = normalizeConnectionRequest(payload, sessionId ?? null)
 
     if (request) {
@@ -268,8 +267,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'connection.expire') {
-    // Settled server-side with the card still open; request-correlated so a late expire
-    // cannot erase a newer card.
+    // Request-correlated: a late expire for an older operation must not clear a newer card.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
     const request = sessionId ? $connectionRequests.get()[sessionId] : undefined
 

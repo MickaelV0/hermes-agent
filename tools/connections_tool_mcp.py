@@ -32,7 +32,7 @@ ALL_ACTIONS = CONNECTOR_ACTIONS + MCP_ACTIONS
 
 _TARGET_FIELDS = frozenset({"name", "mcp"})
 
-# Renderer outcome → operation state. declined = Not now; error = recoverable, card stays live.
+# Renderer outcome → operation state. declined = Not now; error = recoverable, operation stays open.
 _OUTCOME_STATES = {
     "installed": CONNECTED, "enabled": CONNECTED, "authorized": CONNECTED, "connected": CONNECTED,
     "declined": SKIPPED, "skipped": SKIPPED,
@@ -173,7 +173,7 @@ def _apply_answer(operation: ConnectionOperation, raw: str) -> str:
             continue
         extra = {k: v for k, v in entry.items() if k in ("tools",)}
         operation.record_target(name, state, str(entry.get("detail") or ""), **extra)
-    # The reason is derived from target state, never taken from the renderer's word.
+    # Derived from target state; the renderer's own claim is ignored.
     return SETTLED_ALL_RESOLVED if operation.all_resolved else SETTLED_CONTINUE
 
 

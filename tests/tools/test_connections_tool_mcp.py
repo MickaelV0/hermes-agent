@@ -65,7 +65,7 @@ def test_mcp_targets_without_a_callback_settle_unavailable_with_the_terminal_hin
 
 
 def test_registry_dispatch_never_blocks_and_never_reaches_a_card():
-    # The exact failure mode the earlier fold died of: registry.dispatch forwards no callback.
+    # registry.dispatch forwards no callback; the call must return, not block.
     out = json.loads(registry.dispatch("manage_connections", {"action": "install", "connectors": [_linear()]}))
     assert out["status"] == "unavailable"
 
@@ -150,7 +150,7 @@ def test_no_answer_settles_by_deadline_and_marks_targets_not_connected():
 
 
 def test_mcp_secrets_never_reach_the_model():
-    # A renderer that (wrongly) echoed a credential field: only the whitelisted keys survive.
+    # A renderer that echoes a credential field: only the allowed keys survive.
     answer = json.dumps({"targets": [{"name": "linear", "status": "installed", "api_key": "sk-secret", "env": {"K": "v"}}]})
     out = json.loads(manage_connections(
         {"action": "install", "connectors": [_linear()]}, connection_callback=lambda payload: answer, wait_seconds=5))
@@ -227,7 +227,7 @@ def test_default_wait_comes_from_the_config_key(monkeypatch):
 
 
 def test_settle_reason_comes_from_target_state_not_the_renderer():
-    # Renderer answered one of two targets and claimed all_resolved: the operation is not.
+    # The renderer answered one of two targets and claimed all_resolved; the operation is not resolved.
     answer = json.dumps({"settled_by": "all_resolved", "targets": [{"name": "linear", "status": "declined"}]})
     out = json.loads(manage_connections(
         {"action": "install", "connectors": [_linear(), {"name": "figma", "mcp": True}]},

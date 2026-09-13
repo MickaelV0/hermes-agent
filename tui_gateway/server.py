@@ -670,7 +670,7 @@ def _approval_request_payload(data: dict | None) -> dict:
 
 
 def _pending_request_payload(sid: str, event: str) -> dict | None:
-    """Snapshot of one blocking prompt still parked on *sid*, for clients that missed the emit."""
+    """Snapshot of one blocking prompt still pending on *sid*, for clients that missed the event."""
     with _prompt_lock:
         for rid, (owner_sid, _ev) in _pending.items():
             pending_event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
@@ -701,7 +701,7 @@ def _pending_clarify_request_payload(sid: str) -> dict | None:
 
 
 def _pending_connection_request_payload(sid: str) -> dict | None:
-    """The connection card still blocking *sid*; carries the server-owned deadline."""
+    """The connection request still pending on *sid*, including its server-owned deadline."""
     return _pending_request_payload(sid, "connection.request")
 
 

@@ -515,8 +515,8 @@ export function restorePendingClarifyToolCall(
   return restorePendingBlockingToolCall(messages, { ...payload, name: 'clarify' }, occurredAt)
 }
 
-/** Re-arm a blocking tool row (clarify, connection card) from a resume snapshot: mark the
- *  existing pending part's message live, or project a synthetic row when the transcript lost it. */
+/** Restore a blocking tool row (clarify, connection card) from a resume snapshot: mark the
+ *  existing pending part's message live, or append a row when the transcript has none. */
 export function restorePendingBlockingToolCall(
   messages: ChatMessage[],
   clarifyPayload: GatewayEventPayload & { name: string },

@@ -59,7 +59,7 @@ class Target:
     action: str
     state: str = PENDING
     detail: str = ""
-    # Renderer-reported outcome fields worth relaying (e.g. ``tools`` after OAuth).
+    # Renderer-reported fields passed through to the model (e.g. ``tools`` after OAuth).
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -128,7 +128,7 @@ class ConnectionOperation:
                 return False
             self.settled_at = time.time() if now is None else now
             self.settled_by = by
-            # Unresolved targets freeze as not_connected so the static card has no pending row.
+            # Unresolved targets become not_connected so the settled card shows no pending row.
             for target in self.targets:
                 if not target.resolved:
                     reason = target.detail or by

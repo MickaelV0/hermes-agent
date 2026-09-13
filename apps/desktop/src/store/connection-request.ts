@@ -3,8 +3,8 @@ import { atom, computed } from 'nanostores'
 
 import { $gateway } from './gateway'
 
-/** Pending `connection.request`s, keyed by runtime session id (mirrors the clarify store).
- *  The backend owns `opId`, targets and `deadlineAt`; the renderer never recomputes them. */
+/** Pending `connection.request`s, keyed by runtime session id. The backend owns `opId`,
+ *  targets and `deadlineAt`; the renderer never recomputes them. */
 export type ConnectionTargetKind = 'connector' | 'mcp'
 export type ConnectionAction = 'authorize' | 'enable' | 'install'
 
@@ -19,7 +19,7 @@ export interface ConnectionRequest {
   opId: string
   /** Unix seconds, server-owned. */
   deadlineAt: number
-  /** Agent-supplied one-liner: why this helps right now. */
+  /** One sentence from the agent, shown on the card. */
   reason: string
   targets: ConnectionTarget[]
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
@@ -41,7 +41,7 @@ export interface ConnectionTargetOutcome {
 /** The card's answer, serialized back through `connection.respond`. */
 export interface ConnectionOutcome {
   targets: ConnectionTargetOutcome[]
-  /** How the card asked to settle; omitted = let the backend decide from the target states. */
+  /** Advisory only; the backend derives the settle reason from target states. */
   settled_by?: 'all_resolved' | 'continue'
 }
 
@@ -146,12 +146,12 @@ export function clearConnectionRequest(requestId?: string, sessionId?: string | 
   }
 }
 
-/** Imperative read for the composer's Enter handler. */
+/** Non-reactive read for the composer's Enter handler. */
 export const hasConnectionRequest = (sessionId: string | null | undefined): boolean =>
   Boolean($connectionRequests.get()[keyFor(sessionId)])
 
 /** Send the card's answer. Clears the entry first so the card cannot be answered twice;
- *  false when the request is already gone. `connection.respond` tolerates a late answer. */
+ *  false when the request is already gone. */
 export async function respondToConnectionRequest(request: ConnectionRequest, outcome: ConnectionOutcome): Promise<boolean> {
   const current = $connectionRequests.get()[keyFor(request.sessionId)]
 
@@ -169,8 +169,8 @@ export async function respondToConnectionRequest(request: ConnectionRequest, out
   return true
 }
 
-/** Typing a message while the card is up declines every target (mirrors skipClarifyRequest);
- *  otherwise the follow-up would park until the deadline. */
+/** Typing a message while the card is open declines every target, otherwise the typed
+ *  message would wait behind the blocked tool until the deadline. */
 export async function skipConnectionRequest(sessionId: string | null | undefined): Promise<boolean> {
   const request = $connectionRequests.get()[keyFor(sessionId)]
 
@@ -184,7 +184,7 @@ export async function skipConnectionRequest(sessionId: string | null | undefined
       targets: request.targets.map(target => ({ name: target.name, status: 'declined' }))
     })
   } catch {
-    // A failed skip must not swallow the message being sent; the tool settles on its deadline.
+    // A failed skip must not block the message being sent; the tool settles on its deadline.
   }
 
   return true

@@ -340,7 +340,7 @@ interface FreshSessionDraftOptions {
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
-/** Session-state patch for a restored blocking prompt row (connection card wins over clarify). */
+/** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
 function livePromptStreamId(
   ...projections: ({ streamId: string } | null)[]
 ): { awaitingResponse: false; sawAssistantPayload: true; streamId: string } | Record<string, never> {
@@ -1260,7 +1260,6 @@ export function useSessionActions({
 
               const pendingClarify = pendingClarifyState.request
 
-              // Same replay class as clarify: the card comes back with its original deadline.
               const pendingConnection = restorePendingConnectionFromSnapshot(
                 activated,
                 cachedRuntimeId,

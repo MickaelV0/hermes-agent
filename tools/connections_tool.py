@@ -320,7 +320,7 @@ def manage_connections(
             connection_callback=connection_callback, session_id=session_id, wait_seconds=wait_seconds,
         )
 
-    # Managed leg: portal-gated when a gate is passed (registry handler, inline executor).
+    # Managed leg. Callers that pass a gate (registry handler, inline executor) are portal-gated.
     if connectors_available is not None and not connectors_available():
         return tool_error("Connectors are not available in this session.")
     connectors: List[str] = managed
@@ -532,8 +532,8 @@ registry.register(
     name="manage_connections",
     toolset="connections",
     schema=MANAGE_CONNECTIONS_SCHEMA,
-    # No GUI callback on the registry path; the portal gate lives in the handler, not check_fn,
-    # so signed-out sessions still see the tool for MCP approvals.
+    # The portal gate is in the handler, not check_fn, so signed-out sessions keep the tool for
+    # MCP approvals. The registry path has no GUI callback.
     handler=lambda args, **kw: manage_connections(
         args, session_id=kw.get("session_id"), connectors_available=_connectors_available,
     ),

@@ -543,13 +543,10 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
-    # 44 → 45: turn the `connections` toolset on for every platform whose saved `platform_toolsets`
-    # list predates it. `hermes tools` writes an explicit list, and absence from that list reads as
-    # "unchecked", so a toolset that ships later stays off for picker users while composite users
-    # inherit it. Two "no"s are kept: a platform whose `known_builtin_toolsets` records `connections`
-    # saw the checkbox and left it off, and `agent.disabled_toolsets` (Blank Slate, `hermes tools
-    # --disable`) is subtracted last by the resolver, so appending there would claim an enable that
-    # never takes effect.
+    # 44 → 45: append `connections` to every saved `platform_toolsets` list that predates it
+    # (an explicit list treats absence as unchecked). Skipped when `known_builtin_toolsets`
+    # already records `connections` (a decline) or `agent.disabled_toolsets` names it (the
+    # resolver subtracts that list last, so the append would have no effect).
     from agent.skill_utils import parse_config_string_list
     from hermes_cli.tools_config import _configurable_keys, _get_plugin_toolset_keys
     from hermes_cli.toolset_scope import toolset_allowed_for_platform

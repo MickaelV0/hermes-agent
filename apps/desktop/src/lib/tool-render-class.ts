@@ -36,7 +36,7 @@ export function isFileEditTool(toolName: string): boolean {
 // what a run summarizes and what the live ticker cycles through.
 const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate'])
 
-// Marker the run splitter (name-keyed) uses for a manage_connections part already judged a card.
+// Name the run splitter uses for a manage_connections part it has classified as a card.
 export const CONNECTION_CARD_KEY = 'manage_connections:card'
 
 export function isCardTool(toolName: string, args?: ToolCallMessagePart['result']): boolean {

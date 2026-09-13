@@ -162,8 +162,8 @@ def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
-    # Replay shim: conversations opened before the fold still carry setup_mcp in their cached
-    # prompt. Not in _LEGACY_TOOL_ALIASES because inline tools bypass handle_function_call.
+    # Replay shim for conversations whose cached prompt still names setup_mcp.
+    # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
     return _manage_connections(agent, {
         "action": args.get("action", "install"),
         "connectors": [{"name": args.get("server", ""), "mcp": True}],

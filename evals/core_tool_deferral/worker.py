@@ -166,7 +166,7 @@ def read_window_below_cb(**kw):
     return json.dumps({"title": "Invoices — draft", "text": WINDOW_BELOW})
 
 def connection_cb(payload):
-    # manage_connections MCP targets (the fold that retired setup_mcp): answer every target installed.
+    # Answer every manage_connections MCP target as installed.
     CALLBACK_LOG.append({"name": "manage_connections", "targets": payload.get("targets", [])})
     return json.dumps({"settled_by": "all_resolved", "targets": [
         {"name": t["name"], "status": "installed"} for t in payload.get("targets", [])]})

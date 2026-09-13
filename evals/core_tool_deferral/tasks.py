@@ -300,7 +300,7 @@ def g_project(ctx):
             notes.append("desktop_project called but not with 'apollo'")
     else:
         notes.append("desktop_project never called")
-    # MCP install rides manage_connections with an mcp:true target (setup_mcp was folded in).
+    # MCP install is a manage_connections call with an mcp:true target.
     mcp_calls = [c for c in ctx["messages_tool_args"].get("manage_connections", [])
                  if "github" in json.dumps(c).lower() and "mcp" in json.dumps(c).lower()]
     if _called(ctx, "manage_connections"):

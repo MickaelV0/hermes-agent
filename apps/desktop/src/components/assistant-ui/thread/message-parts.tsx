@@ -108,7 +108,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     )
   }
 
-  // MCP targets get the approval card on every desktop; managed connectors stay behind the onboarding gate.
+  // MCP targets always render the card; managed connectors only under the onboarding gate.
   if (mcpTargets(props.toolName, props.args).length > 0) {
     return <McpSetupTool {...props} />
   }

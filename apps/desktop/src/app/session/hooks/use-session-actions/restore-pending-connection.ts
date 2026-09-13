@@ -14,8 +14,8 @@ export interface PendingConnectionResumeState {
   request: ConnectionRequest | null
 }
 
-/** Restore a pending connection card from a resume snapshot with its original deadline.
- *  A missing snapshot clears only requests older than the RPC (same rule as clarify). */
+/** Restore a pending connection card from a resume snapshot. A missing snapshot clears only
+ *  requests that existed before the RPC started. */
 export function restorePendingConnectionFromSnapshot(
   response: Pick<SessionResumeResponse, 'pending_connection'>,
   sessionId: string,
@@ -44,7 +44,7 @@ export function restorePendingConnectionFromSnapshot(
   return { authoritativeAbsent: false, cleared: null, request }
 }
 
-/** Synthetic tool row for a pending operation whose `tool.start` was missed. */
+/** Tool row for a pending operation whose `tool.start` event was missed. */
 export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload & { name: string } {
   return {
     args: {
@@ -57,7 +57,7 @@ export function connectionRequestToolPayload(request: ConnectionRequest): Gatewa
   }
 }
 
-/** Layer the pending connection row (if any) over an already-projected transcript. */
+/** Add the pending connection row to a projected transcript; null when there is none. */
 export function projectPendingConnection(
   messages: ChatMessage[],
   request: ConnectionRequest | null

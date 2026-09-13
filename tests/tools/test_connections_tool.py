@@ -133,11 +133,8 @@ def test_gateway_failure_is_a_model_actionable_error():
 
 
 def test_mcp_actions_belong_to_mcp_targets_only():
-    # History: an earlier fold was rejected because "the desktop consent card arrives
-    # through a per-tool interception branch keyed on the name setup_mcp and
-    # registry.dispatch never forwards a callback". The fold now runs through the
-    # agent-level inline executor (agent/inline_tool_executors.py), so the MCP verbs
-    # are in the enum — for mcp:true targets only.
+    # The MCP verbs are in the enum for mcp:true targets only. The callback that an earlier
+    # fold could not reach through registry.dispatch now arrives via the inline executor.
     enum = MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]["action"]["enum"]
     assert {"install", "enable", "authorize"} <= set(enum)
 

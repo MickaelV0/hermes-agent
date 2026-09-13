@@ -94,8 +94,8 @@ describe('matchSuggestions', () => {
   })
 
   it('does not offer GitHub: it is not in the catalog, so no index entry can match it', () => {
-    // GitHub is deliberately absent from optional-mcps (its hosted MCP needs a per-host OAuth
-    // app); an index built from catalog `suggest` data has nothing for the word to hit.
+    // GitHub is not in optional-mcps (its hosted MCP needs a per-host OAuth app), so a
+    // catalog-built index has no entry for it.
     const catalogIndex = [
       { hosts: ['linear.app'], keywords: ['linear'], server: 'linear' },
       { hosts: ['figma.com'], keywords: ['figma'], server: 'figma' }

@@ -56,7 +56,7 @@ function readSetupArgs(args: unknown): SetupArgs {
   }
 }
 
-/** The card's view of the settled operation: the first target's frozen state. */
+/** The first target's state from the settled operation. */
 interface SettledResult {
   status?: 'connected' | 'not_connected' | 'skipped' | 'unavailable'
   detail?: string
@@ -205,7 +205,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
   // CANCELLED sentinel; the declined respond has already been sent by then.
   const cancelRef = useRef(false)
 
-  // tool.start fires a tick before connection.request; hold the buttons until wired (clarify's rule).
+  // tool.start arrives before connection.request; disable the buttons until the request exists.
   const ready = Boolean(request?.requestId)
 
   const respond = useCallback(
@@ -223,12 +223,12 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       const success = outcome.status === 'installed' || outcome.status === 'enabled' || outcome.status === 'authorized'
 
       if (success) {
-        // No reload.mcp: the new server's tools arrive through the between-turns refresh.
+        // No reload.mcp: the between-turns refresh registers the new server's tools.
         invalidateMcpSuggestionIndex()
       }
 
       try {
-        // One target, so the operation settles with this answer; tool.complete lands next.
+        // One target: this answer settles the operation.
         await respondToConnectionRequest(request, { settled_by: 'all_resolved', targets: [outcome] })
       } catch (error) {
         notifyError(error, copy.sendFailed)
@@ -282,8 +282,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         return
       }
 
-      // Install: the reviewed catalog is the only source. Required credentials get an
-      // inline prompt first (never pre-filled, never echoed back).
+      // Install from the catalog only. Required credentials are prompted inline first.
       let resolved = entry
 
       if (resolved === undefined) {
@@ -350,7 +349,6 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
   const displayName = prettyName(server)
   const card = cardCopy(copy, action)
 
-  // The endpoint that will be contacted, from the catalog entry.
   const sourceLine = action === 'install' ? (entry?.url ?? copy.catalogSource) : null
 
   // ⌘/Ctrl+Enter → approve, Esc → decline/cancel. Same accelerators, same
