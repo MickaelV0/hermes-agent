@@ -20,6 +20,7 @@ import { $gateway } from './gateway'
 const WIRE = {
   deadline_at: 1_800_000_000,
   op_id: 'op-1',
+  seq: 1,
   tool_call_id: 'call-1',
   targets: [
     { action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const },
@@ -41,6 +42,10 @@ function request(sessionId: string | null, opId = 'op-1'): ConnectionRequest {
 type Snapshot = Parameters<typeof applyOperationStatus>[1]
 type Frame = Parameters<typeof applyConnectionUpdate>[1]
 
+/** The backend stamps every write with a rising `seq`; the fixture counts the same way so a frame
+ *  built later is newer than one built earlier unless a test says otherwise. */
+let nextSeq = WIRE.seq + 1
+
 /** Every `connection.update` frame carries the operation snapshot; `states` overrides per-target state. */
 function frame(
   states: Record<string, Snapshot['targets'][number]['state']>,
@@ -49,6 +54,7 @@ function frame(
   return {
     deadline_at: WIRE.deadline_at,
     op_id: 'op-1',
+    seq: nextSeq++,
     settled: false,
     settled_by: null,
     targets: WIRE.targets.map(target => ({ ...target, state: states[target.name] ?? target.state })),
@@ -109,12 +115,13 @@ describe('connection-request store', () => {
     const repeat = applyOperationStatus(parsed, {
       deadline_at: WIRE.deadline_at,
       op_id: 'op-1',
+      seq: nextSeq++,
       settled: false,
       settled_by: null,
       targets: [{ ...target, required_env: [{ name: 'PG_URL', prompt: 'Connection string', required: true }] }]
     })
 
-    expect(repeat).toBe(parsed)
+    expect(repeat.targets[0]).toBe(parsed.targets[0])
   })
 
   it('binds to the model tool call that opened the operation, on a live request and on resume', () => {
@@ -140,6 +147,7 @@ describe('connection-request store', () => {
     const overlaid = applyOperationStatus(req, {
       deadline_at: WIRE.deadline_at,
       op_id: 'op-1',
+      seq: nextSeq++,
       settled: false,
       settled_by: null,
       targets: [
