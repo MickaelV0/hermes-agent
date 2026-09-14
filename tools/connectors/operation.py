@@ -119,15 +119,18 @@ class ConnectionOperation:
         self._changed(change)
         return change
 
-    def refresh(self, name: str, *, connect_url: Optional[str], detail: str) -> None:
-        """Replace a target's link and detail without a state change (a repeated failure)."""
+    def refresh(self, name: str, *, connect_url: Optional[str], detail: str, actor: Actor = Actor.user) -> None:
+        """Replace a target's link and detail without a state change (a repeated failure).
+
+        ``actor`` says who produced the new text: a second failure of a backend attempt is the
+        backend's report, not the user's move, and the frame must not claim otherwise."""
         target = self.target(name)
         if target is None:
             raise IllegalTransition(f"unknown target {name!r}")
         with self._lock:
             target.connect_url = connect_url
             target.detail = detail
-            change = {"target": name, "from": target.state.value, "to": target.state.value, "actor": Actor.user.value,
+            change = {"target": name, "from": target.state.value, "to": target.state.value, "actor": actor.value,
                       "detail": detail}
         self.wake.set()
         self._changed(change)

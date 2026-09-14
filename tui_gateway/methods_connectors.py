@@ -128,7 +128,7 @@ def _reissue(rid, operation, args):
     """The card's Try again on the open operation: a managed target is re-minted at the gateway, an
     MCP target re-runs its own install / enable / OAuth. Dead rows only — a waiting target already
     holds the link the card reopens, and never calls here."""
-    from tools.connectors.contract import TargetState
+    from tools.connectors.contract import TargetState, allowed
     from tui_gateway.connector_payload import connector_ui_payload
 
     targets = [operation.target(n) for n in args["connectors"]]
@@ -140,6 +140,15 @@ def _reissue(rid, operation, args):
     if len(stale) != len(targets):
         return _connector_rpc_error(rid, 4002, "LINK_STILL_VALID",
                                     "only a failed or expired target can be re-run; reopen the stored link")
+    if operation.settled:
+        # Continue can land between the state read above and the re-run: the result is frozen and
+        # a fresh mint or flow would have no row to report into.
+        return _connector_rpc_error(rid, 4002, "REISSUE_REFUSED", "the operation has settled")
+    # The contract says which dead state a kind can leave: an MCP target has no move out of expired.
+    frozen = [t.name for t in targets if allowed(t.kind, t.state, TargetState.initiated) is None]
+    if frozen:
+        return _connector_rpc_error(rid, 4002, "REISSUE_REFUSED",
+                                    f"this target cannot be run again: {', '.join(frozen)}")
     error = _REISSUE_BY_KIND[targets[0].kind](operation, stale)
     if error:
         return _connector_rpc_error(rid, 4002, "REISSUE_REFUSED", error)
@@ -201,8 +210,9 @@ def _(rid, params):
 
 @method("connection.respond")
 def _(rid, params):
-    """The card's answer for the operation named by ``op_id``: per-target user / renderer-flow
-    transitions and an optional Continue. The contract decides what the card may claim."""
+    """The card's answer for the operation named by ``op_id``: per target an approval that starts
+    the backend's work or a skip, plus an optional Continue. The card never witnesses an outcome,
+    so any other claim moves nothing."""
     from tools.connectors import live
     from tools.connectors.contract import SettleReason
     from tools.connectors.mcp import apply_answer

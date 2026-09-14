@@ -279,3 +279,42 @@ def test_try_again_on_an_mcp_target_re_runs_its_flow_and_never_calls_the_managed
     assert target.connect_url == "https://auth.example/linear/2"
     assert target.detail == ""
     runner.close()
+
+
+def test_try_again_refuses_an_mcp_target_the_contract_cannot_run_again(owned, monkeypatch):
+    """Only a state the transition table can leave may be run again. An MCP target has no move out
+    of ``expired``, so Try again on one is refused instead of dropping a flow that goes nowhere."""
+    owner, _, _ = owned
+    operation = ConnectionOperation([Target("linear", "mcp", "authorize")], session_key=SID)
+    live.open(operation)
+    backend = FakeMcpBackend()
+    runner = mcp.open_runner("authorize", backend)
+    runner.prepare(operation)
+    operation.target("linear").state = TargetState.expired
+
+    monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
+    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+
+    reply = _connect_rpc(owner, connectors=["linear"], reconnect=True)
+    runner.close()
+
+    assert reply["error"]["code"] == 4002
+    assert backend.starts == ["linear"]
+
+
+def test_try_again_refuses_an_operation_that_settled_during_the_call(owned):
+    """Continue can settle the operation between the target read and the re-run; the result is
+    already frozen, so the re-run would spend a flow nothing can report."""
+    operation = ConnectionOperation([Target("linear", "mcp", "authorize")], session_key=SID)
+    live.open(operation)
+    backend = FakeMcpBackend()
+    runner = mcp.open_runner("authorize", backend)
+    runner.prepare(operation)
+    operation.transition("linear", TargetState.failed, Actor.backend_watcher, detail="the provider timed out")
+    operation.settled_at = time.time()
+
+    reply = server._reissue(7, operation, {"connectors": ["linear"]})
+    runner.close()
+
+    assert reply["error"]["code"] == 4002
+    assert backend.starts == ["linear"]
