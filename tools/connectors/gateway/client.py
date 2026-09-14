@@ -10,6 +10,7 @@ import uuid
 from typing import Any, Callable, Optional, Protocol, Sequence
 
 import requests
+from pydantic import ValidationError
 
 from tools.connectors.gateway import wire
 from tools.connectors.gateway.errors import (
@@ -121,7 +122,11 @@ class ConnectorClient:
             page = payload.get("items")
             if not isinstance(page, list) or any(not isinstance(entry, dict) for entry in page):
                 raise ToolGatewayError("invalid connector list items", code="INVALID_RESPONSE")
-            items.extend(page)
+            try:
+                items.extend(wire.ConnectorListItem.model_validate(entry).model_dump(by_alias=True) for entry in page)
+            except ValidationError as exc:
+                raise ToolGatewayError(f"invalid connector list item: {exc.errors()[0].get('msg')}",
+                                       code="INVALID_RESPONSE") from exc
             cursor = payload.get("nextCursor")
             if not cursor:
                 return items

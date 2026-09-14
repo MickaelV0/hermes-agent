@@ -7,28 +7,19 @@ Disconnecting accounts remains a portal-only user decision.
 from typing import Any, Callable, Dict, Optional
 
 from tools.connectors.gateway import config as gateway_config
-from tools.connectors.managed import (
-    _WAIT_DEFAULT_SECONDS,
-    _WAIT_MAX_SECONDS,
-    _WAIT_MIN_SECONDS,
-    run_managed_action,
-)
+from tools.connectors.managed import run_managed_action
 from tools.connectors.mcp import run_mcp_operation
 from tools.connectors.targets import ALL_ACTIONS, MCP_ACTIONS, normalize_targets, validate_action
 from tools.registry import registry, tool_error
-
 
 
 def manage_connections(
     args: Dict[str, Any],
     *,
     client_factory: Optional[Callable[[], Any]] = None,
-    seen_instructions: Optional[set] = None,
-    rendered_links: Optional[Dict[str, Dict[str, float]]] = None,
     session_id: Optional[str] = None,
     connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
-    wait_seconds: Optional[float] = None,
 ) -> str:
     action = str(args.get("action") or "status").strip().lower()
     managed, mcp_targets, target_error = normalize_targets(args.get("connectors"))
@@ -41,15 +32,15 @@ def manage_connections(
     if action in MCP_ACTIONS:
         return run_mcp_operation(
             mcp_targets, action, str(args.get("reason") or "").strip(),
-            connection_callback=connection_callback, session_id=session_id, wait_seconds=wait_seconds,
+            connection_callback=connection_callback, session_id=session_id,
         )
 
     return run_managed_action(
         action, managed, args,
-        client_factory=client_factory, seen_instructions=seen_instructions,
-        rendered_links=rendered_links, session_id=session_id,
-        connectors_available=connectors_available,
+        client_factory=client_factory, session_id=session_id,
+        connection_callback=connection_callback, connectors_available=connectors_available,
     )
+
 
 MANAGE_CONNECTIONS_SCHEMA = {
     "name": "manage_connections",
@@ -59,33 +50,23 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "'connectors': a bare slug or {\"name\": \"gmail\"} is a managed connector; "
         "{\"name\": \"linear\", \"mcp\": true} is a local MCP server. "
         "Managed actions: 'status' lists connectors and whether each is connected; 'connect' "
-        "starts an authorization for the given connectors and returns a link "
-        "for the USER to open in a browser (never open it yourself); "
-        "'reconnect' restarts a broken authorization; "
-        "'wait' blocks until the given connectors report connected. Pass "
-        "SEVERAL slugs in one call to get all authorization links at once. "
-        "When a connector tool "
-        "call returns CONNECTION_REQUIRED, use 'connect' and show the link. "
-        "Send the message that shows the user the links FIRST; on your NEXT "
-        "turn call 'wait' with those same slugs instead of guessing when the "
-        "user is done — it polls for you (a wait in the same turn as the "
-        "connect is bounced, because the user cannot have seen the links "
-        "yet). 'wait' requires 'connectors', and only accepts connectors this "
-        "session already addressed with 'connect' (already-connected apps "
-        "count). A 'timeout' or 'interrupted' result is NOT an "
-        "error: the user has not finished connecting, so ask them whether to "
-        "keep waiting, continue without those apps, or get fresh links. "
+        "starts an authorization for the given connectors; 'reconnect' checks each one and "
+        "repairs only what is not connected ('force': true restarts even a working one, for an "
+        "account switch). Pass SEVERAL slugs in one call. In the desktop app the call shows the "
+        "user a card and blocks until every app is connected, skipped, or the deadline passes; "
+        "the result lists each target as connected / skipped / not_connected and never carries "
+        "a link. Elsewhere the result carries a connect_url per app for the USER to open in a "
+        "browser (never open it yourself); ask them to say when they are done, then use 'status'. "
+        "When a connector tool call returns CONNECTION_REQUIRED, use 'connect'. "
         "MCP actions (targets must carry \"mcp\": true): 'install' adds a catalog entry, "
         "'enable' re-enables a disabled configured server, 'authorize' runs its OAuth. "
-        "They show the user an approval card and block until it settles; the result lists "
-        "each target as connected / skipped / not_connected. Never hand-edit mcp_servers "
-        "config — always use this tool. Never re-ask after a skip or timeout: continue "
-        "without the server or ask in chat. A newly installed or authorized server's tools "
-        "arrive on your next turn. Off the desktop app the MCP targets come back "
-        "'unavailable' with the terminal commands to give the user. "
-        "This tool can NOT disconnect, delete, or revoke an account — that is "
-        "deliberately user-only. When asked, say so and direct the user to "
-        "the Nous Portal (their org's Connectors page) or the desktop app."
+        "They show the user an approval card and block until it settles. Never hand-edit "
+        "mcp_servers config — always use this tool. Never re-ask after a skip or timeout: continue "
+        "without the app or ask in chat. A newly installed or authorized server's tools arrive on "
+        "your next turn. Off the desktop app the MCP targets come back 'unavailable' with the "
+        "terminal commands to give the user. This tool can NOT disconnect, delete, or revoke an "
+        "account — that is deliberately user-only. When asked, say so and direct the user to the "
+        "Nous Portal (their org's Connectors page) or the desktop app."
     ),
     "parameters": {
         "type": "object",
@@ -118,17 +99,11 @@ MANAGE_CONNECTIONS_SCHEMA = {
             },
             "reason": {
                 "type": "string",
-                "description": "MCP actions: one sentence on the approval card — why this helps right now.",
+                "description": "One sentence shown on the card: why this helps right now.",
             },
-            "timeout_seconds": {
-                "type": "integer",
-                "description": (
-                    "For action 'wait' only: how long to hold the call open. "
-                    f"Defaults to {int(_WAIT_DEFAULT_SECONDS)}, clamped to "
-                    f"{int(_WAIT_MIN_SECONDS)}-{int(_WAIT_MAX_SECONDS)}. Ask for "
-                    "more and the result carries a 'timeout_note' saying the cap "
-                    "was applied; call wait again to keep waiting."
-                ),
+            "force": {
+                "type": "boolean",
+                "description": "reconnect only: restart the authorization even if the app is connected (account switch).",
             },
         },
         "required": [],

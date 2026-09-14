@@ -12,6 +12,7 @@
   "clarify.request",
   "connection.expire",
   "connection.request",
+  "connection.update",
   "cron.changed",
   "error",
   "gateway.ready",

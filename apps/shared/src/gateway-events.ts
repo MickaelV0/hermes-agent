@@ -359,14 +359,74 @@ export interface VaultCodeRequestPayload {
   site?: string
 }
 
-/** Mirrors `tui_gateway/agent_callbacks.py::connection_callback`. */
+// Connection operation vocabulary (`tools/connectors/contract.py`). Hand-mirrored until the shared
+// contract rail generates it; a value added on one side without the other is a contract break.
+export type ConnectionTargetKind = 'connector' | 'mcp'
+export type ConnectionTargetState =
+  | 'connected'
+  | 'expired'
+  | 'failed'
+  | 'initiated'
+  | 'not_connected'
+  | 'pending'
+  | 'skipped'
+  | 'unavailable'
+export type ConnectionActor = 'backend_watcher' | 'clock' | 'renderer_flow' | 'user'
+export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt' | 'unavailable'
+export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
+
+export interface ConnectionRequestTarget {
+  action: ConnectionTargetAction
+  kind: ConnectionTargetKind
+  name: string
+}
+
+/** `tools/connectors/operation.py::request_payload`, emitted through
+ *  `tui_gateway/agent_callbacks.py::connection_callback`. `request_id` is absent on a
+ *  `pending_connection` resume snapshot, which is the same payload read from the live operation. */
 export interface ConnectionRequestPayload {
   deadline_at: number
   op_id: string
   reason?: string
-  request_id: string
-  targets: { action: string; kind: string; name: string }[]
+  request_id?: string
+  targets: ConnectionRequestTarget[]
   timeout_seconds?: number
+}
+
+/** One target as `connectors.operation.status` returns it (`tools/connectors/operation.py::Target.snapshot`). */
+export interface ConnectionOperationTarget {
+  action: ConnectionTargetAction
+  attempt?: string
+  connect_url?: string
+  detail?: string
+  kind: ConnectionTargetKind
+  name: string
+  state: ConnectionTargetState
+  tools?: string[]
+}
+
+/** `connectors.operation.status` result (`tui_gateway/methods_connectors.py::_operation_view`). */
+export interface ConnectionOperationStatus {
+  deadline_at: number
+  op_id: string
+  settled: boolean
+  settled_at?: null | number
+  settled_by?: ConnectionSettleReason | null
+  targets: ConnectionOperationTarget[]
+}
+
+/** One target transition, or the settlement, of a connection operation
+ *  (`tui_gateway/methods_connectors.py::_connection_update`). `target`/`from`/`to`/`actor`
+ *  are present on a transition and absent on the settlement frame. */
+export interface ConnectionUpdatePayload {
+  actor?: ConnectionActor
+  detail?: string
+  from?: ConnectionTargetState
+  op_id: string
+  settled: boolean
+  settled_by?: ConnectionSettleReason | null
+  target?: string
+  to?: ConnectionTargetState
 }
 
 /** Side agents (`tui_gateway/methods_prompt.py::_spawn_side_agent`). */
@@ -412,6 +472,7 @@ export const BACKEND_EVENT_NAMES = [
   'clarify.request',
   'connection.expire',
   'connection.request',
+  'connection.update',
   'cron.changed',
   'error',
   'gateway.ready',
@@ -509,6 +570,7 @@ export interface BackendGatewayEventMap {
   'clarify.request': ClarifyRequestPayload
   'connection.expire': RequestExpirePayload
   'connection.request': ConnectionRequestPayload
+  'connection.update': ConnectionUpdatePayload
   'cron.changed': Record<string, unknown>
   error: ErrorPayload
   'gateway.ready': GatewayReadyPayload

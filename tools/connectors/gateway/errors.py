@@ -86,8 +86,10 @@ def render_connection_required(
     message: Optional[str] = None,
     connect_url: Optional[str] = None,
     hint: Optional[str] = None,
+    card: bool = False,
 ) -> dict[str, Any]:
-    """Single shared CONNECTION_REQUIRED shape; the model may relay its connect link."""
+    """Single shared CONNECTION_REQUIRED shape. With a card the link stays on the panel and the
+    model is told a connect card is available; without one the model relays the link."""
     payload: dict[str, Any] = {
         "code": "CONNECTION_REQUIRED",
         "message": message
@@ -99,7 +101,9 @@ def render_connection_required(
     }
     if connector:
         payload["connector"] = connector
-    if connect_url:
+    if card:
+        payload["connect_card_available"] = True
+    elif connect_url:
         payload["connect_url"] = connect_url
     if hint:
         payload["hint"] = hint

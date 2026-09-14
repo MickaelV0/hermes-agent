@@ -88,3 +88,13 @@ def connectors_available(
     except Exception as e:
         logger.debug("Connector availability check failed: %s", e)
         return False
+
+
+def session_platform() -> str:
+    """The session's platform (``desktop``, ``tui``, ``cli``, a messaging platform, or '').
+
+    Decides whether a card exists for this session. Never infer that from a callback being
+    attached: the GUI bridge attaches callbacks to every backend session, terminal TUI included."""
+    from gateway.session_context import get_session_env
+
+    return str(get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()

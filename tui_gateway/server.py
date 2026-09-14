@@ -701,8 +701,13 @@ def _pending_clarify_request_payload(sid: str) -> dict | None:
 
 
 def _pending_connection_request_payload(sid: str) -> dict | None:
-    """The connection request still pending on *sid*, including its server-owned deadline."""
-    return _pending_request_payload(sid, "connection.request")
+    """The open connection operation on *sid* as its ``connection.request`` payload, so a client
+    that missed the event (or restarted) restores the card with the server's deadline."""
+    from tools.connectors import live
+
+    session = _sessions.get(sid)
+    operation = live.current(str(session.get("session_key") or "")) if session else None
+    return operation.request_payload() if operation is not None else None
 
 
 def _pending_approval_request_payload(session_key: str) -> dict | None:

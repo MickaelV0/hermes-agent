@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, List, Optional, Tuple
 
-CONNECTOR_ACTIONS = ("status", "connect", "reconnect", "wait")
+CONNECTOR_ACTIONS = ("status", "connect", "reconnect")
 MCP_ACTIONS = ("install", "enable", "authorize")
 ALL_ACTIONS = CONNECTOR_ACTIONS + MCP_ACTIONS
 
@@ -55,7 +55,7 @@ def validate_action(action: str, managed: List[str], mcp: List[str]) -> Optional
             return (
                 f"'{action}' is an MCP action: every target must carry \"mcp\": true "
                 f"(got managed connector(s) {', '.join(managed)}). Managed connectors use "
-                "connect / reconnect / wait / status."
+                "connect / reconnect / status."
             )
         if not mcp:
             return (

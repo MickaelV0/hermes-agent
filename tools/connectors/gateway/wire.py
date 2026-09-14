@@ -128,7 +128,23 @@ class ConnectorConnectionResult(_Wire):
     status: Literal["active", "initiated", "failed"]
     connect_url: Optional[str] = Field(default=None, alias="connectUrl")
     instruction: Optional[str] = None
+    # Vendor error_message on ``failed``; the list route never carries it.
+    status_reason: Optional[str] = Field(default=None, alias="statusReason")
     reinitiated: bool = False
+
+
+# The gateway's seven-state account status. Present only once an account exists for the
+# toolkit; a value outside this set is a contract break and fails validation.
+ConnectionStatus = Literal["active", "initiated", "failed", "expired", "revoked", "inactive", "initializing"]
+
+
+class ConnectorListItem(_Wire):
+    connector: str
+    enabled: bool = True
+    connected: bool = False
+    connection_status: Optional[ConnectionStatus] = Field(default=None, alias="connectionStatus")
+    status_reason: Optional[str] = Field(default=None, alias="statusReason")
+    disabled_tools: list[str] = Field(default_factory=list, alias="disabledTools")
 
 
 class ConnectorConnectionsSummary(_Wire):

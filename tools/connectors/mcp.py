@@ -1,7 +1,6 @@
-"""MCP connection operations using renderer approval cards.
-
-Calls without an approval callback settle unavailable.
-"""
+"""MCP targets of ``manage_connections``: the renderer runs install / enable / OAuth and answers
+through ``connection.respond``; nothing else observes an MCP flow today (PR3 moves OAuth
+observation server-side). Calls without an approval callback settle unavailable."""
 
 from __future__ import annotations
 
@@ -9,36 +8,28 @@ import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-from tools.connectors.operation import (
-    CONNECTED,
-    FAILED,
-    SETTLED_ALL_RESOLVED,
-    SETTLED_CONTINUE,
-    SETTLED_DEADLINE,
-    SETTLED_INTERRUPT,
-    SETTLED_UNAVAILABLE,
-    SKIPPED,
-    UNAVAILABLE,
-    ConnectionOperation,
-    Target,
-    resolve_wait_timeout,
-)
+from tools.connectors.contract import Actor, SettleReason, TargetState
+from tools.connectors.operation import ConnectionOperation, Target
+from tools.connectors.run import Kind, run_operation
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# Failed approval remains open; a decline resolves as skipped.
+# The renderer's answer vocabulary → target state. A failed approval stays open; a decline resolves.
 _OUTCOME_STATES = {
-    "installed": CONNECTED, "enabled": CONNECTED, "authorized": CONNECTED, "connected": CONNECTED,
-    "declined": SKIPPED, "skipped": SKIPPED,
-    "error": FAILED, "failed": FAILED,
+    "installed": TargetState.connected, "enabled": TargetState.connected, "authorized": TargetState.connected,
+    "connected": TargetState.connected,
+    "declined": TargetState.skipped, "skipped": TargetState.skipped,
+    "error": TargetState.failed, "failed": TargetState.failed,
 }
 
 UNAVAILABLE_HINT = "hermes mcp install {name} / hermes mcp login {name}"
 
-
-
-
+NOTE = (
+    "Settled once; do not re-ask for any target the user skipped or that timed out — continue "
+    "without it or ask in chat. Tools of a newly installed or authorized server become available "
+    "on your next turn."
+)
 
 
 def _catalog_names() -> List[str]:
@@ -76,23 +67,9 @@ def validate_mcp_names(action: str, names: List[str]) -> Optional[str]:
     )
 
 
-def _unavailable_result(operation: ConnectionOperation) -> str:
-    for target in operation.targets:
-        operation.record_target(
-            target.name, UNAVAILABLE, "no approval surface in this session",
-            hint=UNAVAILABLE_HINT.format(name=target.name),
-        )
-    operation.settle(SETTLED_UNAVAILABLE)
-    payload = operation.result()
-    payload["status"] = "unavailable"
-    payload["note"] = (
-        "This session has no approval card, so local MCP servers cannot be set up here. Tell "
-        "the user to run the terminal commands in each target's 'hint', then continue."
-    )
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def _apply_answer(operation: ConnectionOperation, raw: str) -> str:
+def apply_answer(operation: ConnectionOperation, raw: str) -> None:
+    """Fold the card's ``connection.respond`` payload into the operation. Settlement is derived
+    from target states afterwards, never from the card's own ``settled_by`` claim."""
     try:
         answer = json.loads(raw)
     except (TypeError, ValueError):
@@ -104,12 +81,31 @@ def _apply_answer(operation: ConnectionOperation, raw: str) -> str:
             continue
         name = str(entry.get("name") or "").strip().lower()
         state = _OUTCOME_STATES.get(str(entry.get("state") or entry.get("status") or "").lower())
-        if not name or state is None:
+        target = operation.target(name)
+        if target is None or state is None:
             continue
+        actor = Actor.user if state == TargetState.skipped else Actor.renderer_flow
         extra = {k: v for k, v in entry.items() if k in ("tools",)}
-        operation.record_target(name, state, str(entry.get("detail") or ""), **extra)
-    # Derive settlement from target states, not the renderer's claim.
-    return SETTLED_ALL_RESOLVED if operation.all_resolved else SETTLED_CONTINUE
+        if target.state == TargetState.pending and state != TargetState.skipped:
+            operation.transition(name, TargetState.initiated, Actor.renderer_flow)
+        operation.transition(name, state, actor, detail=str(entry.get("detail") or ""), **extra)
+    if answer.get("settled_by") == SettleReason.continue_.value and not operation.all_resolved:
+        operation.settle(SettleReason.continue_)
+
+
+def _unavailable(operation: ConnectionOperation) -> str:
+    for target in operation.targets:
+        target.state = TargetState.unavailable
+        target.detail = "no approval surface in this session"
+        target.extra = {"hint": UNAVAILABLE_HINT.format(name=target.name)}
+    operation.settle(SettleReason.unavailable)
+    payload = operation.result()
+    payload["status"] = "unavailable"
+    payload["note"] = (
+        "This session has no approval card, so local MCP servers cannot be set up here. Tell "
+        "the user to run the terminal commands in each target's 'hint', then continue."
+    )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def run_mcp_operation(
@@ -119,37 +115,40 @@ def run_mcp_operation(
     *,
     connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]],
     session_id: Optional[str],
-    wait_seconds: Optional[float] = None,
 ) -> str:
     error = validate_mcp_names(action, names)
     if error:
         return tool_error(error)
-    operation = ConnectionOperation(
-        [Target(n, "mcp", action) for n in names],
-        session_key=str(session_id or ""),
-        wait_seconds=resolve_wait_timeout() if wait_seconds is None else wait_seconds,
-    )
+    targets = [Target(n, "mcp", action) for n in names]
     if connection_callback is None:
-        return _unavailable_result(operation)
+        return _unavailable(ConnectionOperation(targets, session_key=str(session_id or "")))
+    # PR1-era bridge: the callback blocks and returns the card's answer. The renderer is the only
+    # observer of an MCP flow, so the answer IS the observation and the loop settles right after.
+    def prepare(operation: ConnectionOperation) -> None:
+        pass
 
-    try:
-        raw = connection_callback(operation.request_payload(reason))
-    except Exception as exc:
-        return tool_error(f"MCP approval flow failed: {exc}")
+    def blocking_callback(payload: Dict[str, Any]) -> Optional[str]:
+        operation = _current(payload["op_id"], session_id)
+        raw = connection_callback(payload)
+        if operation is not None:
+            if raw:
+                apply_answer(operation, raw)
+                if not operation.settled:
+                    operation.settle(SettleReason.all_resolved if operation.all_resolved else SettleReason.continue_)
+            else:
+                from tools.interrupt import is_interrupted
 
-    settled_by = _apply_answer(operation, raw or "")
-    if raw:
-        operation.settle(settled_by)
-    else:
-        from tools.interrupt import is_interrupted
+                operation.settle(SettleReason.interrupt if is_interrupted() else SettleReason.deadline)
+        return raw
 
-        operation.settle(SETTLED_INTERRUPT if is_interrupted() else SETTLED_DEADLINE)
-
-    payload = operation.result()
-    payload["status"] = "settled"
-    payload["note"] = (
-        "Settled once; do not re-ask for any target the user skipped or that timed out — "
-        "continue without it or ask in chat. Tools of a newly installed or authorized server "
-        "become available on your next turn."
+    return run_operation(
+        targets, Kind(prepare=prepare, observe=lambda op: None, note=NOTE),
+        session_key=str(session_id or ""), reason=reason, connection_callback=blocking_callback,
+        with_urls_in_result=False,
     )
-    return json.dumps(payload, ensure_ascii=False)
+
+
+def _current(op_id: str, session_id: Optional[str]) -> Optional[ConnectionOperation]:
+    from tools.connectors import live
+
+    return live.get(str(session_id or ""), op_id)
