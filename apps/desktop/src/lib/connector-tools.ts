@@ -51,12 +51,27 @@ export function mcpTargets(toolName: string, args: ToolCallMessagePart['result']
   })
 }
 
+export type ConnectionStatus = 'active' | 'initiated' | 'failed' | 'expired' | 'revoked' | 'inactive' | 'initializing'
+
+const CONNECTION_STATUSES: readonly ConnectionStatus[] = [
+  'active',
+  'initiated',
+  'failed',
+  'expired',
+  'revoked',
+  'inactive',
+  'initializing'
+]
+
+const isConnectionStatus = (value: string): value is ConnectionStatus =>
+  CONNECTION_STATUSES.some(status => status === value)
+
 /** Display-only; these fields never grant access. */
 export interface ConnectorRow {
   connector: string
   connected?: boolean
   enabled?: boolean
-  connectionStatus?: string | null
+  connectionStatus?: ConnectionStatus
   name?: string
   description?: string
 }
@@ -173,7 +188,13 @@ export function connectionRows(
       merged.enabled = row.enabled
     }
 
-    for (const key of ['connectionStatus', 'name', 'description'] as const) {
+    const connectionStatus = connectorText(row.connectionStatus)
+
+    if (connectionStatus && isConnectionStatus(connectionStatus)) {
+      merged.connectionStatus = connectionStatus
+    }
+
+    for (const key of ['name', 'description'] as const) {
       const text = connectorText(row[key])
 
       if (text !== undefined) {

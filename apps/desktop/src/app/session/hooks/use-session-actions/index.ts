@@ -1209,7 +1209,7 @@ export function useSessionActions({
             const activateStartedAt = Date.now() / 1000
             const activateBaselineState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId) ?? cachedViewState
             const clarifyRequestIdAtActivateStart = $clarifyRequests.get()[cachedRuntimeId]?.requestId
-            const connectionRequestIdAtActivateStart = $connectionRequests.get()[cachedRuntimeId]?.requestId
+            const connectionOpIdAtActivateStart = $connectionRequests.get()[cachedRuntimeId]?.opId
 
             try {
               activated = await requestForSession<SessionResumeResponse>('session.activate', {
@@ -1264,7 +1264,7 @@ export function useSessionActions({
                 activated,
                 cachedRuntimeId,
                 activateStartedAt,
-                connectionRequestIdAtActivateStart
+                connectionOpIdAtActivateStart
               ).request
 
               const clarifyAuthoritativelyAbsent =

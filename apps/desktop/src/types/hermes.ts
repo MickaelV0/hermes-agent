@@ -1,3 +1,5 @@
+import type { ConnectionRequestPayload } from '@hermes/shared'
+
 export interface ConfigFieldSchema {
   category?: string
   description?: string
@@ -685,16 +687,9 @@ export interface SessionResumeResponse {
     request_id?: string
   }
   // The connection operation (manage_connections MCP approval card) still
-  // blocking this session. The live `connection.request` payload verbatim:
-  // `deadline_at` is server-owned and a restored card keeps it.
-  pending_connection?: {
-    deadline_at?: number
-    op_id?: string
-    reason?: string
-    request_id?: string
-    targets?: unknown
-    timeout_seconds?: number
-  }
+  // blocking this session. A resume snapshot omits request_id, unlike a live
+  // `connection.request` event.
+  pending_connection?: ConnectionRequestPayload
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]

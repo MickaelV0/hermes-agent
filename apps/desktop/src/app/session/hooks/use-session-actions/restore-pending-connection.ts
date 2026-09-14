@@ -20,18 +20,18 @@ export function restorePendingConnectionFromSnapshot(
   response: Pick<SessionResumeResponse, 'pending_connection'>,
   sessionId: string,
   resumeStartedAt: number,
-  requestIdAtStart?: string
+  opIdAtStart?: string
 ): PendingConnectionResumeState {
   const request = normalizeConnectionRequest(response.pending_connection, sessionId)
 
   if (!request) {
     const current = $connectionRequests.get()[sessionId]
 
-    const existedAtStart = Boolean(current && requestIdAtStart && current.requestId === requestIdAtStart)
+    const existedAtStart = Boolean(current && opIdAtStart && current.opId === opIdAtStart)
     const definitelyOlder = Boolean(current?.receivedAt !== undefined && current.receivedAt < resumeStartedAt)
 
     if (current && (existedAtStart || definitelyOlder)) {
-      clearConnectionRequest(current.requestId, sessionId)
+      clearConnectionRequest(current.opId, sessionId)
 
       return { authoritativeAbsent: true, cleared: current, request: null }
     }
@@ -48,12 +48,12 @@ export function restorePendingConnectionFromSnapshot(
 export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload & { name: string } {
   return {
     args: {
-      action: request.targets[0]?.action ?? 'install',
+      action: request.targets[0]?.action ?? (request.targets[0]?.kind === 'connector' ? 'connect' : 'install'),
       connectors: request.targets.map(target => ({ mcp: target.kind === 'mcp', name: target.name })),
       reason: request.reason
     },
     name: 'manage_connections',
-    tool_id: request.requestId
+    tool_id: request.opId
   }
 }
 

@@ -1,3 +1,5 @@
+import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } from '@hermes/shared'
+
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
@@ -14,7 +16,8 @@ import {
   $connectionRequests,
   clearConnectionRequest,
   normalizeConnectionRequest,
-  setConnectionRequest
+  setConnectionRequest,
+  updateConnectionRequest
 } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -35,6 +38,19 @@ import {
 import { requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
+
+type ConnectionRequestEvent = GatewayEvent<'connection.request'> & { payload: ConnectionRequestPayload }
+type ConnectionUpdateEvent = GatewayEvent<'connection.update'> & { payload: ConnectionUpdatePayload }
+type ConnectionExpirePayload = GatewayEvent<'connection.expire'>['payload'] & { op_id?: string }
+type ConnectionExpireEvent = GatewayEvent<'connection.expire'> & { payload?: ConnectionExpirePayload }
+
+const isConnectionRequestEvent = (event: GatewayEvent): event is ConnectionRequestEvent =>
+  event.type === 'connection.request' && event.payload !== undefined
+
+const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdateEvent =>
+  event.type === 'connection.update' && event.payload !== undefined
+
+const isConnectionExpireEvent = (event: GatewayEvent): event is ConnectionExpireEvent => event.type === 'connection.expire'
 
 /** The blocking-input family: clarify / connection approval / approval / sudo /
  *  secret requests. The Python side is blocked on the matching *.respond, so
@@ -243,9 +259,9 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'connection.request') {
+  if (isConnectionRequestEvent(event)) {
     // Park per-session and upsert a stable tool row so the card renders even if tool.start was missed.
-    const request = normalizeConnectionRequest(payload, sessionId ?? null)
+    const request = normalizeConnectionRequest(event.payload, sessionId ?? null)
 
     if (request) {
       setConnectionRequest(request)
@@ -266,13 +282,24 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'connection.expire') {
-    // Request-correlated: a late expire for an older operation must not clear a newer card.
-    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-    const request = sessionId ? $connectionRequests.get()[sessionId] : undefined
+  if (isConnectionUpdateEvent(event)) {
+    updateConnectionRequest(sessionId ?? null, event.payload)
 
-    if (requestId && request && request.requestId === requestId) {
-      clearConnectionRequest(requestId, sessionId ?? null)
+    if (event.payload.settled && sessionId) {
+      updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+    }
+
+    return true
+  }
+
+  if (isConnectionExpireEvent(event)) {
+    // Request-correlated: a late expire for an older operation must not clear a newer card.
+    const request = $connectionRequests.get()[sessionId ?? '']
+    const { op_id: opId, request_id: requestId } = event.payload ?? {}
+    const matches = request && (opId ? request.opId === opId : Boolean(requestId && request.requestId === requestId))
+
+    if (matches) {
+      clearConnectionRequest(request.opId, sessionId ?? null)
 
       if (sessionId) {
         updateSessionState(sessionId, state => ({ ...state, needsInput: false }))

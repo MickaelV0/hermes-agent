@@ -1,44 +1,62 @@
-import { isRecord } from '@assistant-ui/core/internal'
+import type {
+  ConnectionOperationStatus,
+  ConnectionOperationTarget,
+  ConnectionRequestPayload,
+  ConnectionRequestTarget,
+  ConnectionSettleReason,
+  ConnectionTargetAction,
+  ConnectionTargetKind,
+  ConnectionTargetState,
+  ConnectionUpdatePayload
+} from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { $gateway } from './gateway'
 
-export type ConnectionTargetKind = 'connector' | 'mcp'
-export type ConnectionAction = 'authorize' | 'enable' | 'install'
+export type { ConnectionSettleReason, ConnectionTargetAction, ConnectionTargetKind, ConnectionTargetState }
 
+/** One target of the operation as the renderer knows it. State comes only from the backend
+ *  (`connection.request`, `connectors.operation.status`, `connection.update`); the card never sets it. */
 export interface ConnectionTarget {
   name: string
   kind: ConnectionTargetKind
-  action: ConnectionAction
+  action: ConnectionTargetAction
+  state: ConnectionTargetState
+  detail: string
+  connectUrl: null | string
+  tools: string[]
 }
 
-/** Backend-owned operation data; renderer must not recompute targets or deadline. */
+/** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
+ *  `settledBy` are backend-owned; the renderer holds a cache and drives it through `connection.respond`. */
 export interface ConnectionRequest {
-  requestId: string
+  /** Present when the card was raised by a `connection.request` event; absent on a resume snapshot. */
+  requestId: null | string
   opId: string
   /** Unix seconds; backend-owned. */
   deadlineAt: number
   reason: string
   targets: ConnectionTarget[]
+  settled: boolean
+  settledBy: ConnectionSettleReason | null
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
   receivedAt?: number
   sessionId: string | null
 }
 
-/** `declined` is a user deferral; `error` is recoverable. */
-export type ConnectionTargetStatus = 'authorized' | 'declined' | 'enabled' | 'error' | 'installed'
-
-export interface ConnectionTargetOutcome {
-  name: string
-  status: ConnectionTargetStatus
-  detail?: string
-  tools?: string[]
-}
+/** What the card may say about one target. A managed target can only be skipped from the card; an
+ *  MCP target's flow outcome is reported by the renderer that ran it. Anything else is refused by the
+ *  backend's transition table (4002). */
+export type ConnectionTargetOutcome =
+  | { name: string; status: 'skipped' }
+  | { name: string; status: 'connected'; tools?: string[] }
+  | { name: string; status: 'initiated' }
+  | { name: string; status: 'failed'; detail?: string }
 
 export interface ConnectionOutcome {
-  targets: ConnectionTargetOutcome[]
-  /** The backend derives the settle reason from target states. */
-  settled_by?: 'all_resolved' | 'continue'
+  targets?: ConnectionTargetOutcome[]
+  /** `continue` ends the operation now with unresolved targets stamped `not_connected`. */
+  settled_by?: 'continue'
 }
 
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
@@ -48,56 +66,132 @@ export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 export const sessionConnectionRequest = (sessionId: string | null) =>
   computed($connectionRequests, requests => requests[keyFor(sessionId)] ?? null)
 
-const ACTIONS: readonly ConnectionAction[] = ['install', 'enable', 'authorize']
+const TARGET_STATES: readonly ConnectionTargetState[] = [
+  'connected',
+  'expired',
+  'failed',
+  'initiated',
+  'not_connected',
+  'pending',
+  'skipped',
+  'unavailable'
+]
 
-/** Mirrors `connection.request` and the `pending_connection` resume field. */
-export interface ConnectionRequestWire {
-  request_id?: string
-  op_id?: string
-  deadline_at?: number
-  reason?: string
-  targets?: unknown
+const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
+const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt', 'unavailable']
+
+// The wire carries these as typed literals already; the lookups defend against a backend a version ahead.
+const oneOf =
+  <T extends string>(allowed: readonly T[]) =>
+  (value: null | string | undefined): T | undefined =>
+    allowed.find(candidate => candidate === value)
+
+const targetState = oneOf(TARGET_STATES)
+const targetAction = oneOf(ACTIONS)
+const settleReason = oneOf(SETTLE_REASONS)
+
+// The request payload names targets without state; a resume snapshot may carry a live snapshot row.
+type WireTarget = ConnectionRequestTarget | ConnectionOperationTarget
+
+function parseTarget(entry: WireTarget): ConnectionTarget | null {
+  const name = entry.name.trim()
+
+  if (!name) {
+    return null
+  }
+
+  const live = 'state' in entry ? entry : null
+
+  return {
+    action: targetAction(entry.action) ?? 'install',
+    connectUrl: live?.connect_url ?? null,
+    detail: live?.detail ?? '',
+    kind: entry.kind === 'connector' ? 'connector' : 'mcp',
+    name,
+    state: targetState(live?.state) ?? 'pending',
+    tools: live?.tools ?? []
+  }
 }
 
-const str = (value: string | undefined): string => value ?? ''
-
+/** Parse a `connection.request` event or the `pending_connection` resume field. Null when the payload
+ *  carries no usable operation (no op id, no deadline, no targets). */
 export function normalizeConnectionRequest(
-  payload: ConnectionRequestWire | null | undefined,
+  payload: ConnectionRequestPayload | null | undefined,
   sessionId: string | null
 ): ConnectionRequest | null {
   if (!payload) {
     return null
   }
 
-  const requestId = str(payload.request_id)
-  const opId = str(payload.op_id)
-  const deadlineAt = payload.deadline_at && payload.deadline_at > 0 ? payload.deadline_at : 0
-  const rawTargets = Array.isArray(payload.targets) ? payload.targets : []
+  const targets = payload.targets.map(parseTarget).filter((target): target is ConnectionTarget => target !== null)
 
-  const targets: ConnectionTarget[] = rawTargets.flatMap(entry => {
-    if (!isRecord(entry)) {
-      return []
-    }
-
-    // SAFETY: isRecord excludes arrays and primitives; fields are validated below.
-    const t = entry as { action?: unknown; kind?: unknown; name?: unknown }
-    const name = String(t.name ?? '').trim()
-    const action = ACTIONS.find(a => a === t.action) ?? 'install'
-
-    return name && t.name === name.trim() ? [{ action, kind: t.kind === 'connector' ? 'connector' : 'mcp', name }] : []
-  })
-
-  if (!requestId || !opId || !deadlineAt || targets.length === 0) {
+  if (!payload.op_id || !(payload.deadline_at > 0) || targets.length === 0) {
     return null
   }
 
   return {
-    deadlineAt,
-    opId,
-    reason: str(payload.reason),
+    deadlineAt: payload.deadline_at,
+    opId: payload.op_id,
+    reason: payload.reason ?? '',
     receivedAt: Date.now() / 1000,
-    requestId,
+    requestId: payload.request_id ?? null,
     sessionId,
+    settled: false,
+    settledBy: null,
+    targets
+  }
+}
+
+/** Overlay the authoritative `connectors.operation.status` snapshot on the cached request. */
+export function applyOperationStatus(request: ConnectionRequest, status: ConnectionOperationStatus): ConnectionRequest {
+  if (status.op_id !== request.opId) {
+    return request
+  }
+
+  const byName = new Map(status.targets.map(target => [target.name, target] as const))
+
+  return {
+    ...request,
+    deadlineAt: status.deadline_at,
+    settled: status.settled,
+    settledBy: settleReason(status.settled_by) ?? null,
+    targets: request.targets.map(target => {
+      const live: ConnectionOperationTarget | undefined = byName.get(target.name)
+
+      return live ? mergeLiveTarget(target, live) : target
+    })
+  }
+}
+
+function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
+  return {
+    ...target,
+    connectUrl: live.connect_url ?? target.connectUrl,
+    detail: live.detail ?? target.detail,
+    state: live.state,
+    tools: live.tools ?? target.tools
+  }
+}
+
+/** Apply one `connection.update` frame. Frames for another operation or for a settled request are ignored. */
+export function applyConnectionUpdate(request: ConnectionRequest, update: ConnectionUpdatePayload): ConnectionRequest {
+  if (update.op_id !== request.opId || request.settled) {
+    return request
+  }
+
+  const to = targetState(update.to)
+
+  const targets =
+    update.target && to
+      ? request.targets.map(target =>
+          target.name === update.target ? { ...target, detail: update.detail ?? target.detail, state: to } : target
+        )
+      : request.targets
+
+  return {
+    ...request,
+    settled: update.settled,
+    settledBy: settleReason(update.settled_by) ?? request.settledBy,
     targets
   }
 }
@@ -106,14 +200,28 @@ export function setConnectionRequest(request: ConnectionRequest): void {
   $connectionRequests.set({ ...$connectionRequests.get(), [keyFor(request.sessionId)]: request })
 }
 
-export function clearConnectionRequest(requestId?: string, sessionId?: string | null): void {
+export function updateConnectionRequest(sessionId: string | null, update: ConnectionUpdatePayload): void {
+  const current = $connectionRequests.get()[keyFor(sessionId)]
+
+  if (!current) {
+    return
+  }
+
+  const next = applyConnectionUpdate(current, update)
+
+  if (next !== current) {
+    setConnectionRequest(next)
+  }
+}
+
+export function clearConnectionRequest(opId?: string, sessionId?: string | null): void {
   const requests = $connectionRequests.get()
 
   if (sessionId !== undefined) {
     const key = keyFor(sessionId)
     const current = requests[key]
 
-    if (!current || (requestId && current.requestId !== requestId)) {
+    if (!current || (opId && current.opId !== opId)) {
       return
     }
 
@@ -124,57 +232,57 @@ export function clearConnectionRequest(requestId?: string, sessionId?: string | 
     return
   }
 
-  const next: Record<string, ConnectionRequest> = {}
-  let changed = false
+  const kept = Object.entries(requests).filter(([, value]) => opId && value.opId !== opId)
 
-  for (const [key, value] of Object.entries(requests)) {
-    if (requestId && value.requestId !== requestId) {
-      next[key] = value
-    } else {
-      changed = true
-    }
-  }
-
-  if (changed) {
-    $connectionRequests.set(next)
+  if (kept.length !== Object.keys(requests).length) {
+    $connectionRequests.set(Object.fromEntries(kept))
   }
 }
 
 /** The composer's Enter handler reads this without subscribing. */
-export const hasConnectionRequest = (sessionId: string | null | undefined): boolean =>
-  Boolean($connectionRequests.get()[keyFor(sessionId)])
+export const hasConnectionRequest = (sessionId: string | null | undefined): boolean => {
+  const request = $connectionRequests.get()[keyFor(sessionId)]
 
-// Clear first so the card cannot be answered twice.
+  return Boolean(request && !request.settled)
+}
+
+/** Drive the operation. The entry stays in the store: the backend answers with `connection.update`
+ *  and the card re-renders from that; only settlement removes it. */
 export async function respondToConnectionRequest(request: ConnectionRequest, outcome: ConnectionOutcome): Promise<boolean> {
   const current = $connectionRequests.get()[keyFor(request.sessionId)]
 
-  if (!current || current.requestId !== request.requestId) {
+  if (!current || current.opId !== request.opId || current.settled) {
     return false
   }
 
-  clearConnectionRequest(request.requestId, request.sessionId)
-
   await $gateway.get()?.request('connection.respond', {
-    request_id: request.requestId,
-    result: JSON.stringify(outcome)
+    op_id: request.opId,
+    result: JSON.stringify(outcome),
+    session_id: request.sessionId
   })
 
   return true
 }
 
-// Decline before sending: the tool blocks the typed message until its deadline.
+/** Not now on one target. */
+export const skipConnectionTarget = (request: ConnectionRequest, name: string): Promise<boolean> =>
+  respondToConnectionRequest(request, { targets: [{ name, status: 'skipped' }] })
+
+/** Continue: end the operation now with whatever is unresolved. */
+export const continueConnectionRequest = (request: ConnectionRequest): Promise<boolean> =>
+  respondToConnectionRequest(request, { settled_by: 'continue' })
+
+// Typing a message while the card is open ends the operation, otherwise the typed message waits behind
+// the blocked tool until the deadline.
 export async function skipConnectionRequest(sessionId: string | null | undefined): Promise<boolean> {
   const request = $connectionRequests.get()[keyFor(sessionId)]
 
-  if (!request) {
+  if (!request || request.settled) {
     return false
   }
 
   try {
-    await respondToConnectionRequest(request, {
-      settled_by: 'all_resolved',
-      targets: request.targets.map(target => ({ name: target.name, status: 'declined' }))
-    })
+    await continueConnectionRequest(request)
   } catch {
     // A failed skip must not block the message; the tool settles at its deadline.
   }
