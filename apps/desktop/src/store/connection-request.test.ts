@@ -92,6 +92,34 @@ describe('connection-request store', () => {
     expect(updated.targets[0]).toMatchObject({ connectionId: 'ca_1', iconUrl: 'https://logos.composio.dev/api/gmail', state: 'initiated', title: 'Gmail' })
   })
 
+  it('carries the credentials an MCP install still waits for, and holds the row across a repeat frame', () => {
+    const target = {
+      action: 'install' as const,
+      kind: 'mcp' as const,
+      name: 'postgres',
+      required_env: [{ name: 'PG_URL', prompt: 'Connection string', required: true }],
+      state: 'pending' as const
+    }
+
+    const parsed = normalizeConnectionRequest({ ...WIRE, targets: [target] }, 's')!
+
+    expect(parsed.targets[0].requiredEnv).toEqual([{ name: 'PG_URL', prompt: 'Connection string', required: true }])
+    // A connector target never lists credentials.
+    expect(normalizeConnectionRequest(WIRE, 's')!.targets[0].requiredEnv).toEqual([])
+
+    // The next frame carries a fresh array with the same fields; the row must keep its identity so the
+    // open credential inputs do not remount under the user.
+    const repeat = applyOperationStatus(parsed, {
+      deadline_at: WIRE.deadline_at,
+      op_id: 'op-1',
+      settled: false,
+      settled_by: null,
+      targets: [{ ...target, required_env: [{ name: 'PG_URL', prompt: 'Connection string', required: true }] }]
+    })
+
+    expect(repeat).toBe(parsed)
+  })
+
   it('binds to the model tool call that opened the operation, on a live request and on resume', () => {
     expect(normalizeConnectionRequest(WIRE, 's1')?.toolCallId).toBe('call-1')
   })

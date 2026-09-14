@@ -371,7 +371,7 @@ export type ConnectionTargetState =
   | 'pending'
   | 'skipped'
   | 'unavailable'
-export type ConnectionActor = 'backend_watcher' | 'clock' | 'renderer_flow' | 'user'
+export type ConnectionActor = 'backend_watcher' | 'clock' | 'user'
 export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt' | 'unavailable'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
 
@@ -386,6 +386,14 @@ export interface ConnectionRequestPayload {
   tool_call_id?: string
 }
 
+/** One credential an MCP install still needs. The backend lists them while the target waits on the
+ *  card; the card renders a field per entry and sends the values back with the approval. */
+export interface ConnectionTargetEnvField {
+  name: string
+  prompt?: string
+  required: boolean
+}
+
 /** One target as `connectors.operation.status` returns it (`tools/connectors/operation.py::Target.snapshot`). */
 export interface ConnectionOperationTarget {
   action: ConnectionTargetAction
@@ -398,6 +406,8 @@ export interface ConnectionOperationTarget {
   icon_url?: string
   kind: ConnectionTargetKind
   name: string
+  /** On an MCP install that is waiting for credentials; absent on every other target. */
+  required_env?: ConnectionTargetEnvField[]
   state: ConnectionTargetState
   title?: string
   tools?: string[]

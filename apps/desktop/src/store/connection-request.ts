@@ -4,6 +4,7 @@ import type {
   ConnectionRequestPayload,
   ConnectionSettleReason,
   ConnectionTargetAction,
+  ConnectionTargetEnvField,
   ConnectionTargetKind,
   ConnectionTargetState,
   ConnectionUpdatePayload
@@ -12,7 +13,13 @@ import { atom, computed } from 'nanostores'
 
 import { $gateway } from './gateway'
 
-export type { ConnectionSettleReason, ConnectionTargetAction, ConnectionTargetKind, ConnectionTargetState }
+export type {
+  ConnectionSettleReason,
+  ConnectionTargetAction,
+  ConnectionTargetEnvField,
+  ConnectionTargetKind,
+  ConnectionTargetState
+}
 
 /** One target of the operation as the renderer knows it. State comes only from the backend
  *  (`connection.request`, `connectors.operation.status`, `connection.update`); the card never sets it. */
@@ -29,6 +36,8 @@ export interface ConnectionTarget {
   iconUrl: string
   title: string
   tools: string[]
+  /** Credentials an MCP install is still waiting for; empty on every other target. */
+  requiredEnv: ConnectionTargetEnvField[]
 }
 
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
@@ -47,12 +56,11 @@ export interface ConnectionRequest {
   sessionId: string | null
 }
 
-/** Answers the card may give for one target. Anything else the backend refuses (4002). */
+/** Answers the card may give for one target: the user said no, or the user consented and the backend
+ *  does the work. The card never reports an outcome; only the backend moves a target. */
 export type ConnectionTargetOutcome =
   | { name: string; status: 'skipped' }
-  | { name: string; status: 'connected'; tools?: string[] }
-  | { name: string; status: 'initiated' }
-  | { name: string; status: 'failed'; detail?: string }
+  | { env?: Record<string, string>; name: string; status: 'approved' }
 
 export interface ConnectionOutcome {
   targets?: ConnectionTargetOutcome[]
@@ -107,6 +115,7 @@ function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null 
     state: targetState(entry.state) ?? 'pending',
     tools: entry.tools ?? [],
     connectionId: entry.connection_id ?? '',
+    requiredEnv: entry.required_env ?? [],
     iconUrl: entry.icon_url ?? '',
     title: entry.title ?? ''
   }
@@ -175,7 +184,8 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
     tools: live.tools ?? target.tools,
     connectionId: live.connection_id ?? target.connectionId,
     iconUrl: live.icon_url ?? target.iconUrl,
-    title: live.title ?? target.title
+    title: live.title ?? target.title,
+    requiredEnv: live.required_env ?? target.requiredEnv
   }
 
   const same =
@@ -186,10 +196,21 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
     next.title === target.title &&
     next.state === target.state &&
     next.tools.length === target.tools.length &&
-    next.tools.every((tool, index) => tool === target.tools[index])
+    next.tools.every((tool, index) => tool === target.tools[index]) &&
+    sameEnvFields(next.requiredEnv, target.requiredEnv)
 
   return same ? target : next
 }
+
+// Every frame carries a fresh array, so identity would churn the row and remount its open inputs.
+const sameEnvFields = (next: ConnectionTargetEnvField[], previous: ConnectionTargetEnvField[]): boolean =>
+  next.length === previous.length &&
+  next.every(
+    (field, index) =>
+      field.name === previous[index].name &&
+      field.prompt === previous[index].prompt &&
+      field.required === previous[index].required
+  )
 
 /** Apply one `connection.update` frame. Every frame carries the operation's full target snapshot, so
  *  the store overlays it; frames for another operation or for a settled request are ignored. */

@@ -29,9 +29,75 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
-interface ConnectorOwner {
+/** Which backend owns the session whose operation this card drives. */
+export interface ConnectorOwner {
   connectionId: null | string
   profile: string
+}
+
+/** Resolve that owner. Null until it resolves and null when it cannot: a card RPC must reach the
+ *  gateway that holds the operation, never whichever one the window happens to have in front. */
+export function useConnectionOwner(sessionId: null | string, active: boolean): ConnectorOwner | null {
+  const [owner, setOwner] = useState<ConnectorOwner | null>(null)
+
+  useEffect(() => {
+    if (!sessionId || !active) {
+      setOwner(null)
+
+      return
+    }
+
+    let cancelled = false
+    const ambientProfile = $activeGatewayProfile.get()
+
+    void resolveSessionOwner(sessionId)
+      .then(scope => {
+        assertSessionOwnerResolved(scope, { method: 'connectors.connect', sessionId })
+
+        if (!cancelled) {
+          setOwner({
+            connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
+            profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
+          })
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOwner(null)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [active, sessionId])
+
+  return owner
+}
+
+/** Try again for one target of the open operation: one RPC, and the fresh link when the backend
+ *  minted one. The backend re-mints only what is actually dead. */
+export async function reissueConnectionTarget(
+  owner: ConnectorOwner,
+  request: ConnectionRequest,
+  name: string
+): Promise<null | string> {
+  const reply = await requestGatewayForAgent<ToolCallMessagePartProps['result']>(
+    owner.connectionId,
+    owner.profile,
+    'connectors.connect',
+    {
+      connectors: [name],
+      reconnect: true,
+      session_id: request.sessionId
+    },
+    45000
+  )
+
+  const rows = recordOf(reply).targets
+  const minted = Array.isArray(rows) ? rows.map(recordOf).find(row => connectorText(row.name) === name) : undefined
+
+  return connectorAuthorizationUrl(minted?.connect_url)
 }
 
 /** Names requested by a manage_connections part, including an event-projected row. */
@@ -79,40 +145,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
 
   const live = !untargetedStatus && connectionRequestOwnsPart(props, request)
   // Owner routes and hints are keyed by the stored id, not the runtime id the events carry.
-  const ownerSessionId = storedId
-  const [owner, setOwner] = useState<ConnectorOwner | null>(null)
-
-  useEffect(() => {
-    if (!ownerSessionId || !live) {
-      setOwner(null)
-
-      return
-    }
-
-    let cancelled = false
-    const ambientProfile = $activeGatewayProfile.get()
-
-    void resolveSessionOwner(ownerSessionId)
-      .then(scope => {
-        assertSessionOwnerResolved(scope, { method: 'connectors.connect', sessionId: ownerSessionId })
-
-        if (!cancelled) {
-          setOwner({
-            connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
-            profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
-          })
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setOwner(null)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [live, ownerSessionId])
+  const owner = useConnectionOwner(storedId, live)
 
   if (!live || !request) {
     return <ToolFallback {...props} />
@@ -141,7 +174,7 @@ const connected = (copy: ConnectorCopy): SettledWord => ({ meta: copy.connected,
 const notConnected = (copy: ConnectorCopy): SettledWord => ({ meta: copy.notConnected })
 const skipped = (copy: ConnectorCopy): SettledWord => ({ meta: copy.skipped })
 
-const CONNECTOR_CARD_PHASES = {
+export const CONNECTOR_CARD_PHASES = {
   connected: { mark: 'connected', resolved: true, settled: connected, verb: 'none' },
   expired: { mark: 'idle', resolved: false, settled: notConnected, verb: 'reissue' },
   failed: { mark: 'idle', resolved: false, settled: notConnected, verb: 'reissue' },
@@ -152,7 +185,7 @@ const CONNECTOR_CARD_PHASES = {
   unavailable: { mark: 'idle', resolved: true, settled: notConnected, verb: 'none' }
 } satisfies Record<ConnectionTargetState, ConnectorCardPhase>
 
-const MARK_LABEL = {
+export const MARK_LABEL = {
   connected: (copy: ConnectorCopy) => copy.connected,
   idle: (copy: ConnectorCopy) => copy.notConnected,
   waiting: (copy: ConnectorCopy) => copy.waiting
@@ -169,28 +202,13 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
   const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
 
-  // Try again is one RPC on the open operation; the backend re-mints only a dead link. The fresh link
-  // opens at once, and the update frame then paints the row as waiting. A refused re-mint is a click
-  // that changed nothing, so it gets a toast; the row stays as it was.
+  // The fresh link opens at once, and the update frame then paints the row as waiting. A refused
+  // re-mint is a click that changed nothing, so it gets a toast; the row stays as it was.
   const reissue = async (target: ConnectionTarget): Promise<void> => {
     setReissuing(current => new Set(current).add(target.name))
 
     try {
-      const reply = await requestGatewayForAgent<ToolCallMessagePartProps['result']>(
-        owner.connectionId,
-        owner.profile,
-        'connectors.connect',
-        {
-          connectors: [target.name],
-          reconnect: true,
-          session_id: request.sessionId
-        },
-        45000
-      )
-
-      const rows = recordOf(reply).targets
-      const minted = Array.isArray(rows) ? rows.map(recordOf).find(row => connectorText(row.name) === target.name) : undefined
-      const url = connectorAuthorizationUrl(minted?.connect_url)
+      const url = await reissueConnectionTarget(owner, request, target.name)
 
       if (url) {
         void window.hermesDesktop?.openExternal?.(url)

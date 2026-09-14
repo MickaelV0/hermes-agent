@@ -33,6 +33,7 @@ const REQUEST: ConnectionRequest = {
       title: '',
       kind: 'connector',
       name: 'gmail',
+      requiredEnv: [],
       state: 'initiated',
       tools: []
     },
@@ -45,6 +46,7 @@ const REQUEST: ConnectionRequest = {
       title: '',
       kind: 'connector',
       name: 'notion',
+      requiredEnv: [],
       state: 'initiated',
       tools: []
     }

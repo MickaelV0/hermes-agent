@@ -30,6 +30,7 @@ const GMAIL: ConnectionTarget = {
   title: '',
   kind: 'connector',
   name: 'gmail',
+  requiredEnv: [],
   state: 'pending',
   tools: []
 }

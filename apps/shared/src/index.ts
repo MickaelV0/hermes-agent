@@ -75,6 +75,7 @@ export {
   type ConnectionRequestPayload,
   type ConnectionSettleReason,
   type ConnectionTargetAction,
+  type ConnectionTargetEnvField,
   type ConnectionTargetKind,
   type ConnectionTargetState,
   type ConnectionUpdatePayload,
