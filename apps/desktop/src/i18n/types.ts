@@ -3462,7 +3462,6 @@ export interface Translations {
       authorized: (server: string) => string
       failed: (server: string) => string
       toolCount: (count: number) => string
-      notInCatalog: (server: string) => string
       envRequired: string
       sendFailed: string
       reloadFailed: string

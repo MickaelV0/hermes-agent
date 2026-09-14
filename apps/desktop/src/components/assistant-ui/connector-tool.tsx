@@ -1,9 +1,10 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ConnectionTargetState } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { sessionRoute } from '@/app/routes'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
@@ -19,6 +20,7 @@ import {
   recordOf
 } from '@/lib/connector-tools'
 import {
+  $connectionRequests,
   type ConnectionRequest,
   type ConnectionTarget,
   continueConnectionRequest,
@@ -36,6 +38,23 @@ export interface ConnectorOwner {
   profile: string
 }
 
+/** Resolve that owner for one stored session, or null when it cannot be resolved. */
+async function connectionOwnerFor(sessionId: string, method: string): Promise<ConnectorOwner | null> {
+  const ambientProfile = $activeGatewayProfile.get()
+
+  try {
+    const scope = await resolveSessionOwner(sessionId)
+    assertSessionOwnerResolved(scope, { method, sessionId })
+
+    return {
+      connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
+      profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Resolve that owner. Null until it resolves and null when it cannot: a card RPC must reach the
  *  gateway that holds the operation, never whichever one the window happens to have in front. */
 export function useConnectionOwner(sessionId: null | string, active: boolean): ConnectorOwner | null {
@@ -49,24 +68,12 @@ export function useConnectionOwner(sessionId: null | string, active: boolean): C
     }
 
     let cancelled = false
-    const ambientProfile = $activeGatewayProfile.get()
 
-    void resolveSessionOwner(sessionId)
-      .then(scope => {
-        assertSessionOwnerResolved(scope, { method: 'connectors.connect', sessionId })
-
-        if (!cancelled) {
-          setOwner({
-            connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
-            profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
-          })
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setOwner(null)
-        }
-      })
+    void connectionOwnerFor(sessionId, 'connectors.connect').then(resolved => {
+      if (!cancelled) {
+        setOwner(resolved)
+      }
+    })
 
     return () => {
       cancelled = true
@@ -74,6 +81,36 @@ export function useConnectionOwner(sessionId: null | string, active: boolean): C
   }, [active, sessionId])
 
   return owner
+}
+
+/** The browser leg of a connection came back through `hermes://connections/done`. Show the session
+ *  that opened the operation and tell its backend to read the account now instead of at its next
+ *  tick. Nothing in the link is trusted to move a row: the op id only names which card to show, and
+ *  the backend reads the account itself. An operation this window holds no card for is ignored. */
+export async function openConnectionDoneLink(
+  op: string,
+  navigate: (to: string) => void,
+  storedSessionIdFor: (runtimeSessionId: string) => string
+): Promise<void> {
+  const request = Object.values($connectionRequests.get()).find(entry => entry.opId === op)
+
+  if (!request?.sessionId) {
+    return
+  }
+
+  const storedId = storedSessionIdFor(request.sessionId)
+  navigate(sessionRoute(storedId))
+
+  const owner = await connectionOwnerFor(storedId, 'connectors.operation.wake')
+
+  if (!owner) {
+    return
+  }
+
+  await requestGatewayForAgent(owner.connectionId, owner.profile, 'connectors.operation.wake', {
+    op_id: op,
+    session_id: request.sessionId
+  })
 }
 
 /** Try again for one target of the open operation: one RPC, and the fresh link when the backend
@@ -186,6 +223,63 @@ export const CONNECTOR_CARD_PHASES = {
   unavailable: { mark: 'idle', resolved: true, settled: notConnected, verb: 'none' }
 } satisfies Record<ConnectionTargetState, ConnectorCardPhase>
 
+/** Where the keyboard goes when a row moves. */
+export interface ConnectorFocusHandoff {
+  cardRef: RefObject<HTMLDivElement | null>
+  continueRef: RefObject<HTMLButtonElement | null>
+}
+
+function focusChangedRow(card: HTMLElement, name: string): void {
+  const row = [...card.querySelectorAll<HTMLElement>('[data-connector-row]')].find(
+    node => node.dataset.connectorRow === name
+  )
+
+  // The verb when the row still has one, else the row: a keyboard user whose control just
+  // disappeared would otherwise be dropped back to the document.
+  ;(row?.querySelector('button') ?? row)?.focus()
+}
+
+/** Move focus to what the backend changed: the row that moved, or Continue once every row resolved.
+ *  Only while the card already holds focus — a transition the user is not looking at must not take
+ *  the keyboard away from wherever they are. */
+export function useConnectorFocusHandoff(
+  targets: readonly ConnectionTarget[],
+  { cardRef, continueRef }: ConnectorFocusHandoff
+): void {
+  const seen = useRef<Map<string, ConnectionTargetState> | null>(null)
+  const states = targets.map(target => `${target.name}=${target.state}`).join('|')
+
+  // The ref holds what the last frame said, for comparison only: nothing renders from it, so it
+  // cannot lag a render the way a mirrored atom would.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    const previous = seen.current
+    seen.current = new Map(targets.map(target => [target.name, target.state]))
+
+    const card = cardRef.current
+
+    const moved = targets.find(target => {
+      const before = previous?.get(target.name)
+
+      return before !== undefined && before !== target.state
+    })
+
+    if (!previous || !moved || !card?.contains(document.activeElement)) {
+      return
+    }
+
+    if (targets.every(target => CONNECTOR_CARD_PHASES[target.state].resolved) && continueRef.current) {
+      continueRef.current.focus()
+
+      return
+    }
+
+    focusChangedRow(card, moved.name)
+    // The target states are the whole input; `states` changes exactly when one of them moves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [states])
+}
+
 export const MARK_LABEL = {
   connected: (copy: ConnectorCopy) => copy.connected,
   idle: (copy: ConnectorCopy) => copy.notConnected,
@@ -202,6 +296,11 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   const copy = t.connectors
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
   const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
+  // DOM handles for the focus handoff, never rendered state.
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  const continueRef = useRef<HTMLButtonElement | null>(null)
+
+  useConnectorFocusHandoff(request.targets, { cardRef, continueRef })
 
   // The fresh link opens at once, and the update frame then paints the row as waiting. A refused
   // re-mint is a click that changed nothing, so it gets a toast; the row stays as it was.
@@ -247,7 +346,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   }
 
   return (
-    <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer>
+    <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer ref={cardRef}>
       <ConnectorCard title={copy.title}>
         {request.targets.map(target => {
           const phase = CONNECTOR_CARD_PHASES[target.state]
@@ -286,7 +385,12 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
       </ConnectorCard>
       {unresolved ? (
         <div className="px-3.5">
-          <Button onClick={() => void continueConnectionRequest(request)} size="xs" variant="textStrong">
+          <Button
+            onClick={() => void continueConnectionRequest(request)}
+            ref={continueRef}
+            size="xs"
+            variant="textStrong"
+          >
             {t.common.continue}
           </Button>
         </div>

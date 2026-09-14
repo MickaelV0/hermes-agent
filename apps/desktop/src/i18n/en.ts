@@ -3933,7 +3933,6 @@ export const en: Translations = {
       authorized: server => `Authorized ${server}`,
       failed: server => `Setup failed for ${server}`,
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
-      notInCatalog: server => `“${server}” is not in the MCP catalog`,
       envRequired: 'Fill in the required credentials first',
       sendFailed: 'Could not send MCP setup response',
       reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',

@@ -2,15 +2,17 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import {
+  connectionRequestOwnsPart,
   CONNECTOR_CARD_PHASES,
   type ConnectorOwner,
   MARK_LABEL,
   reissueConnectionTarget,
-  useConnectionOwner
+  useConnectionOwner,
+  useConnectorFocusHandoff
 } from '@/components/assistant-ui/connector-tool'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
@@ -73,10 +75,16 @@ const MCP_VERBS = {
   unavailable: 'none'
 } satisfies Record<ConnectionTargetState, McpVerb>
 
-// Only `initiated` depends on the action: authorize hands the user a link, install and enable run on
-// the backend with nothing for the user to do.
-const rowVerb = (target: ConnectionTarget, action: SetupAction): McpVerb =>
-  target.state === 'initiated' && action !== 'authorize' ? 'working' : MCP_VERBS[target.state]
+// Two states read differently per action. A pending authorize is the backend still minting the link,
+// so there is nothing for the user to consent to; an initiated install or enable is the backend
+// working, while an initiated authorize is the link waiting to be opened.
+const rowVerb = (target: ConnectionTarget, action: SetupAction): McpVerb => {
+  if (action === 'authorize') {
+    return target.state === 'pending' ? 'none' : MCP_VERBS[target.state]
+  }
+
+  return target.state === 'initiated' ? 'working' : MCP_VERBS[target.state]
+}
 
 function readSetupAction(args: unknown): SetupAction {
   const [target] = mcpTargets('manage_connections', parseMaybeObject(args))
@@ -88,6 +96,36 @@ interface SettledTarget {
   name: string
   state: string
   tools: number
+}
+
+/** A settled operation is a static per-target summary: one word per row, no controls. */
+function McpSetupSummary({ action, rows }: { action: SetupAction; rows: SettledTarget[] }) {
+  const { t } = useI18n()
+  const copy = t.assistant.mcpSetup
+
+  return (
+    <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer>
+      {rows.map(row => {
+        const title = prettyName(row.name)
+        const connected = row.state === 'connected'
+
+        const line = connected
+          ? DONE[action](copy, title)
+          : row.state === 'skipped'
+            ? t.connectors.skipped
+            : t.connectors.notConnected
+
+        return (
+          <ConnectorSummary
+            connector={{ name: row.name, title }}
+            key={row.name}
+            meta={connected && row.tools > 0 ? `${line} · ${copy.toolCount(row.tools)}` : line}
+            tone={connected ? 'ok' : undefined}
+          />
+        )
+      })}
+    </div>
+  )
 }
 
 function readSetupResult(result: unknown): SettledTarget[] {
@@ -122,37 +160,13 @@ const McpSetupLive = (props: ToolCallMessagePartProps) => {
 }
 
 function McpSetupSettled({ args, result }: ToolCallMessagePartProps) {
-  const { t } = useI18n()
-  const copy = t.assistant.mcpSetup
   const action = useMemo(() => readSetupAction(args), [args])
-  const targets = useMemo(() => readSetupResult(result), [result])
+  const rows = useMemo(() => readSetupResult(result), [result])
 
-  return (
-    <div className="my-2 grid min-w-0 max-w-lg gap-1">
-      {targets.map(target => {
-        const title = prettyName(target.name)
-        const connected = target.state === 'connected'
-
-        const line = connected
-          ? DONE[action](copy, title)
-          : target.state === 'skipped'
-            ? t.connectors.skipped
-            : t.connectors.notConnected
-
-        return (
-          <ConnectorSummary
-            connector={{ name: target.name, title }}
-            key={target.name}
-            meta={connected && target.tools > 0 ? `${line} · ${copy.toolCount(target.tools)}` : line}
-            tone={connected ? 'ok' : undefined}
-          />
-        )
-      })}
-    </div>
-  )
+  return <McpSetupSummary action={action} rows={rows} />
 }
 
-export function McpSetupPending({ args }: ToolCallMessagePartProps) {
+export function McpSetupPending(props: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const copy = t.assistant.mcpSetup
   const view = useSessionView()
@@ -162,11 +176,13 @@ export function McpSetupPending({ args }: ToolCallMessagePartProps) {
   const storedId = useStore(view.$storedId)
   const $request = useMemo(() => sessionConnectionRequest(sessionId), [sessionId])
   const request = useStore($request)
-  const action = useMemo(() => readSetupAction(args), [args])
-  const owner = useConnectionOwner(storedId, request !== null)
+  const action = useMemo(() => readSetupAction(props.args), [props.args])
+  // The session's operation belongs to one tool call; another call's request never paints here.
+  const live = connectionRequestOwnsPart(props, request)
+  const owner = useConnectionOwner(storedId, live)
 
   // `tool.start` arrives before `connection.request`.
-  if (!request) {
+  if (!live || !request) {
     return (
       <div className={cn(SHELL_CLASS, 'my-1.5 flex items-center gap-2')} data-slot="connector-card">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
@@ -191,6 +207,18 @@ export function McpSetupOffer({ action, owner, request }: McpSetupOfferProps) {
   const copy = t.assistant.mcpSetup
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
   const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
+
+  const settledRows = request.targets.map(target => ({
+    name: target.name,
+    state: target.state,
+    tools: target.tools.length
+  }))
+
+  // DOM handles for the focus handoff, never rendered state.
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  const continueRef = useRef<HTMLButtonElement | null>(null)
+
+  useConnectorFocusHandoff(request.targets, { cardRef, continueRef })
 
   // Try again is one RPC on the open operation. An authorize target comes back with a fresh link,
   // which opens at once; install and enable simply run again and report through connection.update.
@@ -219,8 +247,12 @@ export function McpSetupOffer({ action, owner, request }: McpSetupOfferProps) {
     }
   }
 
+  if (request.settled) {
+    return <McpSetupSummary action={action} rows={settledRows} />
+  }
+
   return (
-    <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer>
+    <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer ref={cardRef}>
       <ConnectorCard title={TITLE[action](copy)}>
         {request.targets.map(target => (
           <McpSetupRow
@@ -236,7 +268,12 @@ export function McpSetupOffer({ action, owner, request }: McpSetupOfferProps) {
       </ConnectorCard>
       {unresolved ? (
         <div className="px-3.5">
-          <Button onClick={() => void continueConnectionRequest(request)} size="xs" variant="textStrong">
+          <Button
+            onClick={() => void continueConnectionRequest(request)}
+            ref={continueRef}
+            size="xs"
+            variant="textStrong"
+          >
             {t.common.continue}
           </Button>
         </div>
@@ -273,6 +310,8 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
     }
   }, [target.state])
 
+  // The verb stays held until the backend moves the row, not until the RPC returns: a second click
+  // in that window would send the consent twice.
   const approve = async () => {
     setSending(true)
 
@@ -282,7 +321,6 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
       })
     } catch (error) {
       notifyError(error, copy.sendFailed)
-    } finally {
       setSending(false)
     }
   }
@@ -290,7 +328,7 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
   const label = VERB[action](copy)
 
   const ACTIONS = {
-    approve: { busy: sending, disabled: missing, label, onClick: () => void approve() },
+    approve: { busy: sending, disabled: missing || sending, label, onClick: () => void approve() },
     open: {
       disabled: target.connectUrl === null,
       label,

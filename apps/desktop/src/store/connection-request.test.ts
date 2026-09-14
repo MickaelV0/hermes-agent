@@ -175,6 +175,22 @@ describe('connection-request store', () => {
     expect(applyConnectionUpdate(settled, frame({ gmail: 'connected' }))).toBe(settled)
   })
 
+  it('never lets an older frame move a row the newer one already moved', () => {
+    const req = normalizeConnectionRequest({ ...WIRE, seq: 4 }, 'a')!
+
+    expect(req.seq).toBe(4)
+
+    const newer = applyConnectionUpdate(req, frame({ gmail: 'connected' }, { seq: 5 }))
+
+    expect(newer.targets[0].state).toBe('connected')
+    expect(newer.seq).toBe(5)
+
+    // Seq 5 is what the backend last wrote; a repeat of 5 and a late 4 are the transport reordering.
+    expect(applyConnectionUpdate(newer, frame({ gmail: 'failed' }, { seq: 5 }))).toBe(newer)
+    expect(applyConnectionUpdate(newer, frame({ gmail: 'failed' }, { seq: 4 }))).toBe(newer)
+    expect(applyOperationStatus(newer, { ...frame({ gmail: 'pending' }), seq: 3 })).toBe(newer)
+  })
+
   it('updateConnectionRequest writes the store only when something changed', () => {
     setConnectionRequest(request('a'))
     const before = $connectionRequests.get().a

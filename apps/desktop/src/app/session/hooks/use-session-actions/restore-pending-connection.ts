@@ -39,6 +39,14 @@ export function restorePendingConnectionFromSnapshot(
     return { authoritativeAbsent: true, cleared: null, request: null }
   }
 
+  const current = $connectionRequests.get()[sessionId]
+
+  // A resume snapshot is read once and can land after the live frames it predates. It must not
+  // revive a card the operation already settled, nor put back a row a newer frame has moved.
+  if (current && (current.settled || (current.opId === request.opId && current.seq > request.seq))) {
+    return { authoritativeAbsent: false, cleared: null, request: current }
+  }
+
   setConnectionRequest(request)
 
   return { authoritativeAbsent: false, cleared: null, request }

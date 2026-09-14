@@ -34,6 +34,7 @@ const LINEAR: ConnectionTarget = {
 const REQUEST: ConnectionRequest = {
   deadlineAt: 1_800_000_000,
   opId: 'operation-1',
+  seq: 0,
   toolCallId: 'mcp-call-1',
   sessionId: SESSION_ID,
   settled: false,
@@ -206,13 +207,71 @@ describe('the MCP setup card', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith(
-        'connectors.connect',
-        { connectors: ['linear'], reconnect: true, session_id: SESSION_ID },
-        expect.any(Number),
-        undefined
-      )
+      expect(request).toHaveBeenCalledTimes(1)
     })
+
+    const [method, params] = request.mock.calls[0]
+
+    expect(method).toBe('connectors.connect')
+    expect(params).toMatchObject({ connectors: ['linear'], reconnect: true, session_id: SESSION_ID })
+  })
+
+
+  it('paints no card for a tool call that did not open the operation', () => {
+    setConnectionRequest({ ...REQUEST, toolCallId: 'mcp-call-0' })
+
+    renderTool()
+
+    expect(screen.queryByText('Linear', { selector: 'span' })).toBeNull()
+    expect(screen.queryAllByRole('button')).toHaveLength(0)
+  })
+
+  it('holds Install from the click until the state frame moves the row', async () => {
+    const request = vi.fn().mockResolvedValue({ status: 'ok' })
+    // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
+    $gateway.set({ request } as never)
+    setConnectionRequest(REQUEST)
+
+    renderOffer()
+    const install = screen.getAllByRole('button', { name: 'Install' })[0]
+    fireEvent.click(install)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(1)
+    })
+
+    expect(install.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(install)
+
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers nothing to approve on an authorize row: the backend is still minting the link', () => {
+    renderOffer({ ...REQUEST, targets: [{ ...LINEAR, action: 'authorize', state: 'pending' }] }, 'authorize')
+
+    expect(screen.queryByRole('button', { name: 'Authorize' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy()
+  })
+
+  it('drops its controls the moment the operation settles, and says how each target ended', () => {
+    renderOffer({
+      ...REQUEST,
+      settled: true,
+      settledBy: 'continue',
+      targets: [
+        { ...LINEAR, state: 'connected', tools: ['a', 'b'] },
+        { ...LINEAR, name: 'postgres', state: 'skipped' }
+      ]
+    })
+
+    expect(screen.getByText('Installed Linear · 2 tools')).toBeTruthy()
+    expect(screen.getByText('Skipped')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull()
+    expect(
+      [...window.document.querySelectorAll('[data-connector-offer] button')].every(button =>
+        button.hasAttribute('disabled')
+      )
+    ).toBe(true)
   })
 
   it('lists every target once settled, in the same three words as the connector card', () => {

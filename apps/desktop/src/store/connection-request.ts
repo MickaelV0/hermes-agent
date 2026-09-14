@@ -38,12 +38,21 @@ export interface ConnectionTarget {
   requiredEnv: ConnectionTargetEnvField[]
 }
 
+/** The operation's monotonic write counter (`ConnectionOperation.seq`), stamped on every frame the
+ *  backend sends. Declared structurally so the reducer works whether or not the shared wire types
+ *  already carry the field, and against a backend that predates it. */
+interface Sequenced {
+  seq?: number
+}
+
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
  *  `settledBy` are backend-owned; the renderer holds a cache and drives it through `connection.respond`. */
 export interface ConnectionRequest {
   /** The model's tool call that opened the operation. The card lives on that row and no other. */
   toolCallId: string
   opId: string
+  /** The sequence of the newest frame this cache holds; an older frame for the same op is dropped. */
+  seq: number
   /** Unix seconds; backend-owned. */
   deadlineAt: number
   targets: ConnectionTarget[]
@@ -120,7 +129,7 @@ function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null 
 /** Parse a `connection.request` event or the `pending_connection` resume field. Null when the payload
  *  carries no usable operation (no op id, no deadline, no targets). */
 export function normalizeConnectionRequest(
-  payload: ConnectionRequestPayload | null | undefined,
+  payload: (ConnectionRequestPayload & Sequenced) | null | undefined,
   sessionId: string | null
 ): ConnectionRequest | null {
   if (!payload) {
@@ -137,6 +146,7 @@ export function normalizeConnectionRequest(
     deadlineAt: payload.deadline_at,
     opId: payload.op_id,
     receivedAt: Date.now() / 1000,
+    seq: payload.seq ?? 0,
     sessionId,
     settled: false,
     settledBy: null,
@@ -145,9 +155,14 @@ export function normalizeConnectionRequest(
   }
 }
 
-/** Overlay the authoritative `connectors.operation.status` snapshot on the cached request. */
-export function applyOperationStatus(request: ConnectionRequest, status: ConnectionOperationStatus): ConnectionRequest {
-  if (status.op_id !== request.opId) {
+/** Overlay the authoritative `connectors.operation.status` snapshot on the cached request. Frames for
+ *  another operation, and frames the operation wrote before the one already applied, change nothing:
+ *  the transport can reorder them and an older one would regress a row. */
+export function applyOperationStatus(
+  request: ConnectionRequest,
+  status: ConnectionOperationStatus & Sequenced
+): ConnectionRequest {
+  if (status.op_id !== request.opId || (status.seq !== undefined && status.seq <= request.seq)) {
     return request
   }
 
@@ -160,15 +175,19 @@ export function applyOperationStatus(request: ConnectionRequest, status: Connect
   })
 
   const settledBy = settleReason(status.settled_by) ?? null
+  const seq = status.seq ?? request.seq
 
   // Same reference on a no-op so subscribers do not re-render for an identical frame.
   const unchanged =
     request.deadlineAt === status.deadline_at &&
+    request.seq === seq &&
     request.settled === status.settled &&
     request.settledBy === settledBy &&
     targets.every((target, index) => target === request.targets[index])
 
-  return unchanged ? request : { ...request, deadlineAt: status.deadline_at, settled: status.settled, settledBy, targets }
+  return unchanged
+    ? request
+    : { ...request, deadlineAt: status.deadline_at, seq, settled: status.settled, settledBy, targets }
 }
 
 function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
@@ -206,7 +225,10 @@ const sameEnvFields = (next: ConnectionTargetEnvField[], previous: ConnectionTar
 
 /** Apply one `connection.update` frame. Every frame carries the operation's full target snapshot, so
  *  the store overlays it; frames for another operation or for a settled request are ignored. */
-export function applyConnectionUpdate(request: ConnectionRequest, update: ConnectionUpdatePayload): ConnectionRequest {
+export function applyConnectionUpdate(
+  request: ConnectionRequest,
+  update: ConnectionUpdatePayload & Sequenced
+): ConnectionRequest {
   if (update.op_id !== request.opId || request.settled) {
     return request
   }
@@ -218,7 +240,7 @@ export function setConnectionRequest(request: ConnectionRequest): void {
   $connectionRequests.set({ ...$connectionRequests.get(), [keyFor(request.sessionId)]: request })
 }
 
-export function updateConnectionRequest(sessionId: string | null, update: ConnectionUpdatePayload): void {
+export function updateConnectionRequest(sessionId: string | null, update: ConnectionUpdatePayload & Sequenced): void {
   const current = $connectionRequests.get()[keyFor(sessionId)]
 
   if (!current) {
