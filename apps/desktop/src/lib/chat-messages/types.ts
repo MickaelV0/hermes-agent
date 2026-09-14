@@ -2,9 +2,11 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 import { type BillingBlock } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface TimelinePartMetadata {
+  toolResultMetadata?: ToolResultMetadata
   /** Unix seconds when this visible activity segment began. Fractional values
    * preserve the millisecond precision available on live gateway events. */
   timestamp?: number
@@ -104,7 +106,7 @@ export type GatewayEventPayload = {
   // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
-  // connection.request (manage_connections MCP targets — inline approval card)
+  // connection request (manage_connections MCP targets — inline approval card)
   op_id?: string
   deadline_at?: number
   targets?: unknown

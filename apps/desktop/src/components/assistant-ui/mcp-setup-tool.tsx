@@ -205,7 +205,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
   // CANCELLED sentinel; the declined respond has already been sent by then.
   const cancelRef = useRef(false)
 
-  // tool.start arrives before connection.request; disable the buttons until the request exists.
+  // tool.start arrives before the server request; disable the buttons until the request exists.
   const ready = Boolean(request?.requestId)
 
   const respond = useCallback(
@@ -220,14 +220,14 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         return
       }
 
-      const success = outcome.status === 'installed' || outcome.status === 'enabled' || outcome.status === 'authorized'
+      const success = outcome.state === 'installed' || outcome.state === 'enabled' || outcome.state === 'authorized'
 
       if (success) {
         // No reload.mcp: the between-turns refresh registers the new server's tools.
         invalidateMcpSuggestionIndex()
       }
 
-      try {
+try {
         // One target: this answer settles the operation.
         await respondToConnectionRequest(request, { settled_by: 'all_resolved', targets: [outcome] })
       } catch (error) {
@@ -242,7 +242,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
     // and let the abandoned work notice via cancelRef at its next poll.
     cancelRef.current = true
     triggerHaptic('cancel')
-    void respond({ name: server, status: 'declined' })
+    void respond({ name: server, state: 'declined' })
   }, [respond, server])
 
   const approve = useCallback(async () => {
@@ -264,7 +264,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       if (action === 'enable') {
         await setMcpServerEnabled(server, true)
         triggerHaptic('submit')
-        await respond({ name: server, status: 'enabled' })
+        await respond({ name: server, state: 'enabled' })
 
         return
       }
@@ -277,7 +277,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         })
 
         triggerHaptic('submit')
-        await respond({ name: server, status: 'authorized', tools: (flow.tools ?? []).map(tool => tool.name) })
+        await respond({ name: server, state: 'authorized', tools: (flow.tools ?? []).map(tool => tool.name) })
 
         return
       }
@@ -292,7 +292,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       }
 
       if (!resolved) {
-        await respond({ detail: copy.notInCatalog(server), name: server, status: 'error' })
+        await respond({ detail: copy.notInCatalog(server), name: server, state: 'error' })
 
         return
       }
@@ -327,7 +327,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       }
 
       triggerHaptic('submit')
-      await respond({ name: server, status: 'installed' })
+      await respond({ name: server, state: 'installed' })
     } catch (error) {
       // User cancel: the declined respond is already on the wire — the
       // abandoned flow just stops, nothing to report.
@@ -339,7 +339,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       await respond({
         detail: error instanceof Error ? error.message : String(error),
         name: server,
-        status: 'error'
+        state: 'error'
       })
     } finally {
       setWorking(false)

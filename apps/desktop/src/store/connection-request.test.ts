@@ -1,3 +1,4 @@
+import type { ConnectionRequestParams } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -10,28 +11,29 @@ import {
   setConnectionRequest,
   skipConnectionRequest
 } from './connection-request'
-import { $gateway } from './gateway'
+import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
 
-const WIRE = {
+const WIRE: ConnectionRequestParams = {
   deadline_at: 1_800_000_000,
   op_id: 'op-1',
   reason: 'tickets',
-  request_id: 'req-1',
+  session_id: 's1',
   targets: [
     { action: 'install', kind: 'mcp', name: 'linear' },
     { action: 'install', kind: 'mcp', name: 'figma' }
-  ]
-}
-
-type Gateway = NonNullable<ReturnType<typeof $gateway.get>>
-
-function fakeGateway(rpc: Gateway['request']): Gateway {
-  // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
-  return { request: rpc } as Gateway
+  ],
+  timeout_seconds: 120
 }
 
 function request(sessionId: string | null, requestId = 'req-1'): ConnectionRequest {
-  return normalizeConnectionRequest({ ...WIRE, request_id: requestId }, sessionId)!
+  return normalizeConnectionRequest(WIRE, requestId, sessionId)!
+}
+
+function remember(requestId: string) {
+  const respond = vi.fn()
+  rememberServerRequest({ fail: vi.fn(), id: requestId, method: 'connection', params: {}, respond })
+
+  return respond
 }
 
 describe('connection-request store', () => {
@@ -41,11 +43,11 @@ describe('connection-request store', () => {
 
   afterEach(() => {
     $connectionRequests.set({})
-    $gateway.set(null)
+    resetServerRequestsForTests()
   })
 
   it('normalizes the wire payload and keeps the server-owned deadline verbatim', () => {
-    const parsed = normalizeConnectionRequest(WIRE, 's1')
+    const parsed = normalizeConnectionRequest(WIRE, 'req-1', 's1')
 
     expect(parsed?.deadlineAt).toBe(WIRE.deadline_at)
     expect(parsed?.opId).toBe('op-1')
@@ -53,10 +55,10 @@ describe('connection-request store', () => {
   })
 
   it('rejects a payload with no targets, no op id or no deadline', () => {
-    expect(normalizeConnectionRequest({ ...WIRE, targets: [] }, 's1')).toBeNull()
-    expect(normalizeConnectionRequest({ ...WIRE, op_id: undefined }, 's1')).toBeNull()
-    expect(normalizeConnectionRequest({ ...WIRE, deadline_at: 0 }, 's1')).toBeNull()
-    expect(normalizeConnectionRequest(null, 's1')).toBeNull()
+    expect(normalizeConnectionRequest({ ...WIRE, targets: [] }, 'req-1', 's1')).toBeNull()
+    expect(normalizeConnectionRequest({ ...WIRE, op_id: '' }, 'req-1', 's1')).toBeNull()
+    expect(normalizeConnectionRequest({ ...WIRE, deadline_at: 0 }, 'req-1', 's1')).toBeNull()
+    expect(normalizeConnectionRequest(null, 'req-1', 's1')).toBeNull()
   })
 
   it('keeps requests from concurrent sessions independent', () => {
@@ -77,33 +79,41 @@ describe('connection-request store', () => {
   })
 
   it('respond clears the entry before the RPC and refuses a second answer', async () => {
-    const rpc = vi.fn().mockResolvedValue({ status: 'ok' })
-    $gateway.set(fakeGateway(rpc))
     const req = request('a')
+    const respond = remember(req.requestId)
     setConnectionRequest(req)
 
-    const first = await respondToConnectionRequest(req, { targets: [{ name: 'linear', status: 'installed' }] })
-    const second = await respondToConnectionRequest(req, { targets: [{ name: 'linear', status: 'declined' }] })
+    const first = await respondToConnectionRequest(req, {
+      settled_by: 'all_resolved',
+      targets: [{ name: 'linear', state: 'installed' }]
+    })
+
+    const second = await respondToConnectionRequest(req, {
+      settled_by: 'all_resolved',
+      targets: [{ name: 'linear', state: 'declined' }]
+    })
 
     expect(first).toBe(true)
     expect(second).toBe(false)
-    expect(rpc).toHaveBeenCalledTimes(1)
-    expect(rpc.mock.calls[0][0]).toBe('connection.respond')
-    expect(JSON.parse(rpc.mock.calls[0][1].result).targets[0].status).toBe('installed')
+    expect(respond).toHaveBeenCalledWith({
+      settled_by: 'all_resolved',
+      targets: [{ name: 'linear', state: 'installed' }]
+    })
   })
 
   it('skip declines every target of the pending operation', async () => {
-    const rpc = vi.fn().mockResolvedValue({ status: 'ok' })
-    $gateway.set(fakeGateway(rpc))
-    setConnectionRequest(request('a'))
+    const req = request('a')
+    const respond = remember(req.requestId)
+    setConnectionRequest(req)
 
     expect(await skipConnectionRequest('a')).toBe(true)
     expect(await skipConnectionRequest('a')).toBe(false)
-    const sent = JSON.parse(rpc.mock.calls[0][1].result)
-
-    expect(sent.targets.map((t: { name: string; status: string }) => [t.name, t.status])).toEqual([
-      ['linear', 'declined'],
-      ['figma', 'declined']
-    ])
+    expect(respond).toHaveBeenCalledWith({
+      settled_by: 'all_resolved',
+      targets: [
+        { name: 'linear', state: 'declined' },
+        { name: 'figma', state: 'declined' }
+      ]
+    })
   })
 })
