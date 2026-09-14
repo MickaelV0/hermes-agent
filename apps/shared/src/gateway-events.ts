@@ -375,9 +375,7 @@ export type ConnectionActor = 'backend_watcher' | 'clock' | 'renderer_flow' | 'u
 export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt' | 'unavailable'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
 
-/** `tools/connectors/operation.py::request_payload`, emitted through
- *  `tui_gateway/agent_callbacks.py::connection_callback`. `request_id` is absent on a
- *  `pending_connection` resume snapshot, which is the same payload read from the live operation. */
+/** `tools/connectors/operation.py::request_payload`. `request_id` is absent on a resume snapshot. */
 export interface ConnectionRequestPayload {
   deadline_at: number
   op_id: string
@@ -410,9 +408,8 @@ export interface ConnectionOperationStatus {
   targets: ConnectionOperationTarget[]
 }
 
-/** One change to a connection operation (`tui_gateway/methods_connectors.py::_connection_update`):
- *  a target transition (`target`/`from`/`to`/`actor`) or the settlement (none of those). Every frame
- *  carries the full operation snapshot. */
+/** One target transition (`target`/`from`/`to`/`actor`) or the settlement (none of those), with
+ *  the full operation snapshot. `tui_gateway/methods_connectors.py::_connection_update`. */
 export interface ConnectionUpdatePayload extends ConnectionOperationStatus {
   actor?: ConnectionActor
   detail?: string

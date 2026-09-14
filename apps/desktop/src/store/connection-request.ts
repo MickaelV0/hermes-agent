@@ -43,9 +43,7 @@ export interface ConnectionRequest {
   sessionId: string | null
 }
 
-/** What the card may say about one target. A managed target can only be skipped from the card; an
- *  MCP target's flow outcome is reported by the renderer that ran it. Anything else is refused by the
- *  backend's transition table (4002). */
+/** Answers the card may give for one target. Anything else the backend refuses (4002). */
 export type ConnectionTargetOutcome =
   | { name: string; status: 'skipped' }
   | { name: string; status: 'connected'; tools?: string[] }

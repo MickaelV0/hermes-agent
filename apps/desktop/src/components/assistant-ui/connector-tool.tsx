@@ -84,9 +84,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
     targetNames.length === 0
 
   const live = !untargetedStatus && partMatchesRequest(props, request)
-  // Owner routes, hints and session rows are keyed by the stored session id; the gateway events
-  // above are keyed by the runtime id. Resolving the owner by runtime id finds nothing and the
-  // card renders null while the tool blocks.
+  // Owner routes and hints are keyed by the stored id, not the runtime id the events carry.
   const ownerSessionId = storedId
   const [owner, setOwner] = useState<ConnectorOwner | null>(null)
 

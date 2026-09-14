@@ -10,14 +10,8 @@ import { $connectionRequests, type ConnectionRequest, setConnectionRequest } fro
 import { $gateway } from '@/store/gateway'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 
-// The guided first-run flow never runs in this test: the card is a property of the session's
-// backend surface, not of the HERMES_GUEST_ONBOARDING launch flag. A live run on a signed-in,
-// non-onboarding desktop showed "Running manage connections" with no card while the tool blocked
-// on the operation, because this router still consulted the flag.
-vi.mock('@/lib/onboarding-enabled', () => ({ isOnboardingEnabled: () => false }))
-
-// Runtime id (gateway events, operation store) and stored id (owner hints, session rows) differ in
-// the running app; the card must look the owner up by the stored id.
+// jsdom has no preload bridge, so isOnboardingEnabled() is false here: the card must not depend on it.
+// Runtime id (events, operation store) and stored id (owner hints) differ in the app.
 const SESSION_ID = 'runtime-1'
 const STORED_ID = 'stored-1'
 const OWNER = { connectionId: 'connection-1', profile: 'default' }
