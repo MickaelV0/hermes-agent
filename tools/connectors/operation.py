@@ -127,7 +127,6 @@ class ConnectionOperation:
             self.settled_by = by
             for target in self.targets:
                 if not target.resolved:
-                    target.detail = target.detail or by.value
                     target.state = TargetState.not_connected
             self._settled_snapshot = self._snapshot_locked()
         self.wake.set()

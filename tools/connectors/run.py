@@ -3,8 +3,8 @@
 ``run_operation`` mints the op, registers it in ``live``, lets the kind prepare its targets (a
 managed mint, an MCP catalog check), emits the card through the session callback, then loops:
 sleep on ``op.wake`` for at most one tick, run the kind's ``observe`` hook, settle when every
-target is resolved or the deadline passes. ``connection.respond`` and ``session.interrupt`` reach
-the loop only by transitioning the op through ``live`` and setting ``wake``."""
+target is resolved or the deadline passes. ``connection.respond`` reaches the loop by transitioning
+the op through ``live`` and setting ``wake``; ``/stop`` sets the thread interrupt flag."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from tools.connectors.contract import SettleReason
 from tools.connectors.operation import ConnectionOperation, Target
 
 WATCH_INTERVAL_SECONDS = 5.0
+# The interrupt flag has no wake hook, so the tick sleep is sliced and the flag read each slice.
+_WAKE_SLICE_SECONDS = 0.25
 
 Callback = Callable[[Dict[str, Any]], Optional[str]]
 
@@ -70,22 +72,29 @@ def _watch(operation: ConnectionOperation, kind: Kind, tick_seconds: Optional[fl
     from tools.interrupt import is_interrupted
 
     tick = WATCH_INTERVAL_SECONDS if tick_seconds is None else tick_seconds
-    if is_interrupted():
-        operation.settle(SettleReason.interrupt)
-        return
-    kind.observe(operation)
-    operation.settle_if_all_resolved()
     while not operation.settled:
-        remaining = operation.remaining_seconds()
-        if remaining <= 0:
-            operation.settle(SettleReason.deadline)
-            break
-        operation.wake.wait(min(tick, remaining))
-        operation.wake.clear()
         if is_interrupted():
             operation.settle(SettleReason.interrupt)
-            break
-        kind.observe(operation)
-        operation.settle_if_all_resolved()
+            return
         if time.time() >= operation.deadline_at:
             operation.settle(SettleReason.deadline)
+            return
+        kind.observe(operation)
+        # The card or the clock may have settled the op during the read; its result is frozen.
+        if operation.settled or operation.settle_if_all_resolved():
+            return
+        _sleep_until_wake(operation, tick)
+
+
+def _sleep_until_wake(operation: ConnectionOperation, tick: float) -> None:
+    """Sleep up to one tick, leaving early on ``wake``, the deadline, or the interrupt flag."""
+    from tools.interrupt import is_interrupted
+
+    until = min(time.time() + tick, operation.deadline_at)
+    while not operation.settled and not is_interrupted():
+        remaining = until - time.time()
+        if remaining <= 0:
+            break
+        if operation.wake.wait(min(_WAKE_SLICE_SECONDS, remaining)):
+            break
+    operation.wake.clear()

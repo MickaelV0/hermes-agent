@@ -292,7 +292,7 @@ def test_settle_reason_is_not_written_into_the_row_detail():
         out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
     assert out["settled_by"] == "deadline"
     assert out["targets"][0]["state"] == "not_connected"
-    assert out["targets"][0]["detail"] == ""
+    assert "detail" not in out["targets"][0]
 
 
 def test_interrupt_wakes_the_loop_and_settles_before_the_next_tick():

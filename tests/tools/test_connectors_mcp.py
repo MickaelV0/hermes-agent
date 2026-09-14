@@ -249,4 +249,4 @@ def test_settle_reason_comes_from_target_state_not_the_renderer():
     by_name = {t["name"]: t for t in out["targets"]}
     assert by_name["linear"]["state"] == TargetState.skipped.value
     assert by_name["figma"]["state"] == TargetState.not_connected.value
-    assert by_name["figma"]["detail"] == SettleReason.continue_.value
+    assert "detail" not in by_name["figma"]

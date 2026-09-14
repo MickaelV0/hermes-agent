@@ -55,7 +55,8 @@ def test_settle_is_exactly_once_and_stamps_not_connected():
     assert operation.result() == frozen
     by = {t["name"]: t for t in frozen["targets"]}
     assert by["gmail"]["state"] == "connected"
-    assert by["notion"]["state"] == "not_connected" and by["notion"]["detail"] == "continue"
+    # The settle reason is on the operation, never copied into a row's detail (the card showed it as red text).
+    assert by["notion"]["state"] == "not_connected" and "detail" not in by["notion"]
 
 
 def test_all_resolved_settles_on_connected_or_skipped_only():

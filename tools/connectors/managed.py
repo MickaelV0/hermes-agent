@@ -70,7 +70,9 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
         logger.debug("connector watch poll failed: %s", exc)
         return
     for target in operation.targets:
-        if target.resolved:
+        # Only a live attempt (pending, initiated) can be advanced by a gateway read; a failed or expired
+        # link waits for the user, and a settled op is frozen.
+        if operation.settled or target.state not in (TargetState.pending, TargetState.initiated):
             continue
         row = status.get(target.name)
         if row is None:
