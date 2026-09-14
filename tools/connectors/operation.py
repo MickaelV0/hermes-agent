@@ -144,8 +144,13 @@ class ConnectionOperation:
 
     def _bump_locked(self) -> Dict[str, Any]:
         """Advance the write counter and take the snapshot that frame carries. Both happen under
-        ``_lock`` so a second writer cannot backdate this frame with its own state."""
-        self.seq += 1
+        ``_lock`` so a second writer cannot backdate this frame with its own state.
+
+        After settlement the frozen snapshot is the frame, seq included: a later write changes
+        nothing the renderer can see, so it must not leave the operation naming a seq no frame
+        carried (the resume snapshot would wait for a frame that never comes)."""
+        if self._settled_snapshot is None:
+            self.seq += 1
         return self._result_locked()
 
     def _changed(self, change: Optional[Dict[str, Any]], snapshot: Dict[str, Any]) -> None:

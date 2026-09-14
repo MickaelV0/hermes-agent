@@ -137,6 +137,41 @@ def test_respond_drives_the_live_operation_and_emits_update(owned):
     assert updates[-1]["payload"]["op_id"] == operation.op_id
 
 
+def test_respond_applies_the_answer_under_the_session_s_profile(owned, monkeypatch, tmp_path):
+    """A named-profile session's enable must flip the flag in that profile's config.yaml. The RPC
+    thread carries no profile of its own, so the handler binds the session record's before the
+    answer runs the backend's work."""
+    import yaml
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    owner, _, session = owned
+    home = tmp_path / "home"
+    profile = home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for path in (home, profile):
+        (path / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": {"paper": {"command": "paper-mcp", "enabled": False}}}))
+    session["profile_home"] = str(profile)
+
+    operation = ConnectionOperation([Target("paper", "mcp", "enable")], session_key=SID)
+    token = set_hermes_home_override(profile)
+    try:
+        live.open(operation)  # the tool thread opens it under the turn's profile
+    finally:
+        reset_hermes_home_override(token)
+    runner = mcp.open_runner("enable")  # the real catalog backend: the write is the point
+    runner.prepare(operation)
+    try:
+        reply = _rpc(owner, "connection.respond", op_id=operation.op_id,
+                     result=json.dumps({"targets": [{"name": "paper", "status": "approved"}]}))
+    finally:
+        runner.close()
+
+    assert "result" in reply, reply
+    assert yaml.safe_load((profile / "config.yaml").read_text())["mcp_servers"]["paper"]["enabled"] is True
+    assert yaml.safe_load((home / "config.yaml").read_text())["mcp_servers"]["paper"]["enabled"] is False
+
+
 def test_respond_cannot_claim_an_outcome_for_any_target(owned):
     """The card renders the operation; only skip, approve and Continue are its to say."""
     owner, _, _ = owned

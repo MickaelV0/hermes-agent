@@ -438,17 +438,18 @@ def test_the_off_desktop_note_never_sends_the_model_to_an_action_that_refuses_mc
     assert named == []
 
 
-def test_the_card_surface_is_the_session_not_the_callback(backend):
-    """A desktop session with no callback attached still runs the operation: the surface is a
-    property of the session. The off-desktop answer would hand the model a live link instead."""
+def test_a_desktop_session_with_no_callback_gets_the_link_at_once_and_opens_no_operation(backend):
+    """A call that arrives without the callback (registry dispatch, say from execute_code) has
+    nothing to render a card, so an operation would block the tool for its whole deadline with
+    nobody to answer it. The link goes to the model instead, the way it does off the desktop."""
     with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2), \
          patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         out = json.loads(manage_connections({"action": "authorize", "connectors": [_mcp_target("paper")]},
                                             connection_callback=None, session_id="s1", mcp_backend=backend))
 
-    assert out["status"] == "settled"
-    assert out["settled_by"] == SettleReason.deadline.value
-    assert "connect_url" not in out["targets"][0]
+    assert out["status"] == "initiated"
+    assert out["targets"][0]["connect_url"] == "https://auth.example/paper/1"
+    assert live.current("s1") is None
 
 
 def test_a_repeated_failure_is_reported_by_the_backend_watcher_not_the_user(changes):
@@ -496,6 +497,52 @@ def test_a_worker_whose_operation_settled_first_drops_its_outcome(backend):
     assert not worker.is_alive()
     assert not runner.work["figma"].done.is_set()
     assert operation.result()["targets"][0]["state"] == TargetState.not_connected.value
+
+
+def test_the_prepare_threads_and_the_worker_carry_the_calling_thread_s_profile(tmp_path):
+    """A named-profile turn binds its home through a contextvar on the tool thread. The OAuth
+    flows start on prepare threads and the install runs on a worker; each must see that same
+    home, or the token and the catalog read land in the process home."""
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    backend = FakeBackend()
+    homes = []
+    start_oauth, install = backend.start_oauth, backend.install
+    backend.start_oauth = lambda name: (homes.append((name, get_hermes_home())), start_oauth(name))[1]
+    backend.install = lambda name, env: (homes.append((name, get_hermes_home())), install(name, env))[1]
+
+    token = set_hermes_home_override(tmp_path)
+    try:
+        runner, operation = _runner_for("authorize", backend, "paper", "linear")
+        runner.close()
+        runner, operation = _runner_for("install", backend, "figma")
+        apply_answer(operation, json.dumps({"targets": [{"name": "figma", "status": "approved"}]}))
+        _observe_until(runner, operation, "figma", TargetState.connected)
+        runner.close()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert sorted(name for name, _ in homes) == ["figma", "linear", "paper"]
+    assert [home for _, home in homes] == [tmp_path] * 3
+
+
+def test_a_skip_of_a_row_that_already_connected_is_ignored_and_the_rest_of_the_answer_lands():
+    """The card can send a skip for a row the watcher connected a moment earlier. That skip has
+    nothing to move; the other skips and the Continue in the same answer must still apply."""
+    operation = ConnectionOperation([Target(n, "mcp", "enable") for n in ("paper", "linear", "notion")], session_key="s1")
+    operation.transition("paper", TargetState.initiated, Actor.backend_watcher)
+    operation.transition("paper", TargetState.connected, Actor.backend_watcher)
+    operation.transition("notion", TargetState.initiated, Actor.backend_watcher)
+
+    apply_answer(operation, json.dumps({
+        "targets": [{"name": "paper", "status": "skipped"}, {"name": "linear", "status": "skipped"}],
+        "settled_by": "continue",
+    }))
+
+    assert operation.target("paper").state == TargetState.connected
+    assert operation.target("linear").state == TargetState.skipped
+    assert operation.settled_by == SettleReason.continue_
+    assert operation.result()["targets"][2]["state"] == TargetState.not_connected.value
 
 
 def test_try_again_on_a_settled_operation_starts_no_work(backend):

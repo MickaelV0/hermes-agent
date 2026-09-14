@@ -9,6 +9,7 @@ card, so every action runs at once and the result carries the authorization URL 
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
@@ -208,7 +209,10 @@ class _Runner:
             work.done.set()
             operation.wake.set()
 
-        threading.Thread(target=body, daemon=True, name=f"mcp-{self.action}-{target.name}").start()
+        # The worker runs in a copy of the calling thread's context: a named-profile turn binds its
+        # home through a contextvar, and the install must write the credentials into that home.
+        threading.Thread(target=contextvars.copy_context().run, args=(body,), daemon=True,
+                         name=f"mcp-{self.action}-{target.name}").start()
 
     def prepare(self, operation: ConnectionOperation) -> None:
         _RUNNERS[operation.op_id] = self
@@ -227,8 +231,13 @@ class _Runner:
         The wait bounds how long prepare blocks, not how long a provider may take: a row still
         pending afterwards is left to its own thread, which is the only writer of that row and
         ends with the URL or the flow's own failure. Failing it here as well would make two
-        writers of one row, and a URL that arrives a moment later would have no row to land on."""
-        threads = [threading.Thread(target=self.run, args=(_PREPARE, operation, target), daemon=True,
+        writers of one row, and a URL that arrives a moment later would have no row to land on.
+
+        Each thread runs in its own copy of the calling thread's context: a named-profile turn
+        binds its home through a contextvar, and the flow resolves ``mcp_servers`` and stores the
+        token by that home."""
+        threads = [threading.Thread(target=contextvars.copy_context().run,
+                                    args=(self.run, _PREPARE, operation, target), daemon=True,
                                     name=f"mcp-prepare-{target.name}") for target in operation.targets]
         for thread in threads:
             thread.start()
@@ -453,7 +462,10 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
             continue
         status = str(entry.get("status") or "").lower()
         if status == "skipped":
-            operation.transition(target.name, TargetState.skipped, Actor.user)
+            # A row the backend resolved a moment before the answer arrived has nothing to move; the
+            # rest of the answer still applies. A settled operation is frozen.
+            if not target.resolved and not operation.settled:
+                operation.transition(target.name, TargetState.skipped, Actor.user)
         elif status == "approved" and runner is not None and target.state == TargetState.pending:
             runner.run(_APPROVE, operation, target, _answer_env(entry))
     if answer.get("settled_by") == SettleReason.continue_.value and not operation.all_resolved:
@@ -513,10 +525,11 @@ def run_mcp_operation(
         return tool_error(error)
     runner = open_runner(action, backend)
     session_key = operation_session_key(session_id)
-    # The surface decides, not the callback: every tui_gateway session has the callback attached,
-    # the Ink TUI included, and only the desktop renders the card. A desktop session that arrives
-    # without a callback runs the operation with no card rather than handing the model a live link.
-    if session_platform() != "desktop":
+    # The card exists only where the desktop renders it AND the callback can emit it (the rule
+    # ``managed.run_managed_action`` uses). The Ink TUI has the callback but no card; a desktop call
+    # that arrives without the callback (registry dispatch, e.g. from execute_code) would open an
+    # operation nobody renders and block the tool for its whole deadline. Both get the link instead.
+    if session_platform() != "desktop" or connection_callback is None:
         return _off_desktop_result(runner, names, action, session_key)
     try:
         return run_operation(

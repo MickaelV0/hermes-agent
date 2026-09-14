@@ -239,12 +239,17 @@ def _(rid, params):
     if error:
         return error
     raw = params.get("result", "")
-    try:
-        apply_answer(operation, raw if isinstance(raw, str) else json.dumps(raw))
-    except IllegalTransition as exc:
-        return _connector_rpc_error(rid, 4002, "ILLEGAL_TRANSITION", str(exc))
-    if not operation.settled and operation.all_resolved:
-        operation.settle(SettleReason.all_resolved)
+    # An approval runs the backend's work on this thread (an enable writes config.yaml, an install
+    # stores credentials), so the answer is applied under the session's profile the way
+    # ``_connector_rpc`` binds it; the RPC thread carries no profile of its own.
+    scope = {"profile_home": owner.get("profile_home") or str(_hermes_home)}
+    with _session_profile_runtime_scope(scope):
+        try:
+            apply_answer(operation, raw if isinstance(raw, str) else json.dumps(raw))
+        except IllegalTransition as exc:
+            return _connector_rpc_error(rid, 4002, "ILLEGAL_TRANSITION", str(exc))
+        if not operation.settled and operation.all_resolved:
+            operation.settle(SettleReason.all_resolved)
     if operation.settled:
         live.close(operation)
     return _ok(rid, {"status": "ok", "settled": operation.settled})

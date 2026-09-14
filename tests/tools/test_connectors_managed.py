@@ -12,6 +12,7 @@ Contracts:
 
 import json
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -451,13 +452,68 @@ def test_a_target_the_mint_named_no_account_for_is_never_read():
     assert out["settled_by"] == "deadline"
 
 
-def test_a_rate_limited_account_waits_out_its_retry_after_while_the_others_keep_reading():
-    gw = GatewayFake(rows={"gmail": [RateLimited("slow down", retry_after=30.0)]})
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2):
-        _run({"action": "connect", "connectors": ["gmail", "notion"]}, gw, callback=_desktop_callback(), tick=0.01)
-    reads = [connection_id for connection_id, _ in gw.reads]
-    assert reads.count("ca_gmail_1") == 1  # the 429 bought 30 s; the operation never reaches it
-    assert reads.count("ca_notion_1") > 1
+def _two_initiated_targets():
+    operation = op_module.ConnectionOperation(
+        [op_module.Target("gmail", "connector", "connect"), op_module.Target("notion", "connector", "connect")],
+        session_key="s1")
+    for name, connection_id in (("gmail", "ca_1"), ("notion", "ca_2")):
+        operation.transition(name, c.TargetState.initiated, c.Actor.backend_watcher, connection_id=connection_id)
+    return operation
+
+
+def test_a_rate_limit_parks_every_live_target_not_only_the_one_that_read():
+    """The route's 429 budget is per principal, not per account: once one read is refused, the
+    next target's read in the same tick spends the same budget and would be refused too."""
+    operation = _two_initiated_targets()
+
+    class Limited:
+        reads = []
+
+        def account_status(self, connection_id, *, timeout=None):
+            self.reads.append(connection_id)
+            raise RateLimited("slow down", retry_after=2.0)
+
+    client = Limited()
+    parked_at = time.time()
+    managed._observe(client, operation)
+    managed._observe(client, operation)  # the next tick, well inside the retry window
+
+    assert client.reads == ["ca_1"]
+    assert all(t.next_read_at >= parked_at + 2.0 for t in operation.targets)
+
+
+def test_a_skip_that_lands_during_the_read_drops_the_read_instead_of_raising():
+    """The card's Skip on the RPC thread can resolve a target while the watcher's read of it is in
+    flight; the read then has no live row to move, so it is dropped rather than raised into the
+    tool result (which would leave the operation open with no card to answer it)."""
+    operation = _one_initiated_target()
+
+    class SkipMidRead(_OneRead):
+        def account_status(self, connection_id, *, timeout=None):
+            operation.transition("gmail", c.TargetState.skipped, c.Actor.user)
+            return super().account_status(connection_id, timeout=timeout)
+
+    managed._observe(SkipMidRead("active"), operation)
+    assert operation.target("gmail").state == c.TargetState.skipped
+
+
+def test_a_read_never_waits_longer_than_ten_seconds_whatever_the_deadline():
+    """Continue must be able to return the tool within seconds: a hung gateway may not hold one
+    read for the operation's whole deadline."""
+    operation = _one_initiated_target()
+    assert operation.remaining_seconds() > 200
+
+    class Recording(_OneRead):
+        timeouts = []
+
+        def account_status(self, connection_id, *, timeout=None):
+            self.timeouts.append(timeout)
+            return super().account_status(connection_id, timeout=timeout)
+
+    client = Recording("pending")
+    managed._observe(client, operation)
+    (timeout,) = client.timeouts
+    assert 0 < timeout <= 10.0
 
 
 def test_an_account_the_gateway_does_not_know_moves_nothing_until_the_deadline():

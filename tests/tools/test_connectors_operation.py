@@ -121,3 +121,19 @@ def test_every_emitted_frame_carries_the_state_its_seq_names(monkeypatch):
     by_seq = {snap["seq"]: {t["name"]: t["state"] for t in snap["targets"]} for snap in frames}
     assert by_seq[1] == {"gmail": "initiated", "notion": "pending"}
     assert by_seq[2] == {"gmail": "initiated", "notion": "initiated"}
+
+
+def test_a_write_after_settlement_keeps_the_settle_frame_s_seq(monkeypatch):
+    """The settle frame is the last one the renderer needs; a later write must not advance ``seq``
+    past it, or the resume snapshot names a seq no frame carried and the renderer waits for it."""
+    operation = op.ConnectionOperation(_two())
+    frames = []
+    monkeypatch.setattr(op.ConnectionOperation, "on_change", staticmethod(lambda _o, _c, snapshot: frames.append(snapshot)))
+    operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher)
+    operation.settle(c.SettleReason.continue_)
+    settled_seq = frames[-1]["seq"]
+
+    operation.refresh("gmail", connect_url=None, detail="the provider answered late")
+
+    assert frames[-1]["seq"] == settled_seq
+    assert operation.request_payload()["seq"] == settled_seq

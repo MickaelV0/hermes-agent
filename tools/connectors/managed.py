@@ -27,8 +27,10 @@ logger = logging.getLogger(__name__)
 # inside it and still flips the card within a second of the user finishing at the vendor.
 WATCH_TICK_SECONDS = 1.0
 
-# A read never outlives the operation, and never asks for less than one second.
+# A read never outlives the operation, never asks for less than one second, and never holds the
+# loop for more than ten: Continue must be able to return the tool while a gateway hangs.
 _MIN_READ_SECONDS = 1.0
+_MAX_READ_SECONDS = 10.0
 
 # The six-state account vocabulary -> the state that read ends the attempt in, and who caused it.
 # `pending` is not here: it is the attempt still running, and moves nothing.
@@ -80,6 +82,9 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
             operation.transition(name, TargetState.initiated, actor)
             operation.transition(name, TargetState.connected, Actor.backend_watcher, connection_id=connection_id)
         elif status == "initiated":
+            if not connection_id:
+                logger.warning("connector %s: the mint named no account, so the watcher cannot read it; "
+                               "only the card or the deadline can end the row", name)
             operation.transition(
                 name, TargetState.initiated, actor,
                 connect_url=entry.get("connect_url"), connection_id=connection_id, attempt=entry.get("attempt"),
@@ -101,24 +106,25 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
 def _status_for(client: Any, target: Target, *, timeout: float) -> Optional[Dict[str, Any]]:
     """The one route the watcher reads: that target's own account row. ``None`` means "nothing to
     apply this tick" — no account to read, a rate-limit still in force, an account the gateway does
-    not know yet (404 until the deadline), or a read that failed."""
+    not know yet (404 until the deadline), or a read that failed. A 429 is raised to the tick: its
+    budget is the principal's, so it is not this one target's to wait out."""
     if not target.connection_id or time.time() < target.next_read_at:
         return None
     try:
         return client.account_status(target.connection_id, timeout=timeout)
-    except RateLimited as exc:
-        # The route is per-principal, so backing off this target alone keeps the others reading.
-        target.next_read_at = time.time() + exc.retry_after
-        return None
+    except RateLimited:
+        raise
     except Exception as exc:
         logger.debug("connector account read failed for %s: %s", target.name, exc)
         return None
 
 
 def _apply_read(operation: ConnectionOperation, target: Target, status: str, reason: str) -> None:
-    """Apply one account read to one target. A Continue on the RPC thread can settle the operation
-    between the caller's settled check and this transition; the frozen result stands and the read
-    is dropped."""
+    """Apply one account read to one target. The RPC thread can move the row while the read is in
+    flight — a Skip resolves it, a Continue freezes the whole result — and the read then has no
+    live row to move: it is dropped, not raised into the tool result (that would end the watch
+    with the operation still open and no card to answer it). Any other refusal is a real
+    contract violation."""
     outcome = _ACCOUNT_OUTCOME.get(status)
     if outcome is None:
         return
@@ -129,18 +135,37 @@ def _apply_read(operation: ConnectionOperation, target: Target, status: str, rea
             operation.transition(target.name, TargetState.initiated, Actor.backend_watcher)
         operation.transition(target.name, to, actor, detail=reason or target.detail)
     except IllegalTransition:
-        if not operation.settled:
+        if not operation.settled and _live(target):
             raise
+        logger.debug("connector %s: %s read dropped, the row is %s", target.name, status, target.state.value)
+
+
+def _live(target: Target) -> bool:
+    """Only a live attempt (pending, initiated) can be advanced by a gateway read; a failed or
+    expired link waits for the user, and a resolved row is done."""
+    return target.state in (TargetState.pending, TargetState.initiated)
+
+
+def _park(operation: ConnectionOperation, until: float) -> None:
+    """A 429 is per principal, not per account: every live target waits out the same Retry-After."""
+    for target in operation.targets:
+        if _live(target):
+            target.next_read_at = until
 
 
 def _observe(client: Any, operation: ConnectionOperation) -> None:
-    """One account read per live target per tick, sequential: this is the only thread reading them."""
+    """One account read per live target per tick, sequential: this is the only thread reading them.
+    A 429 ends the tick: the next read would spend the same refused budget."""
     for target in operation.targets:
-        # Only a live attempt (pending, initiated) can be advanced by a gateway read; a failed or expired
-        # link waits for the user, and a settled op is frozen.
-        if operation.settled or target.state not in (TargetState.pending, TargetState.initiated):
+        # A settled op is frozen; a row that is not live waits for the user or is done.
+        if operation.settled or not _live(target):
             continue
-        row = _status_for(client, target, timeout=max(_MIN_READ_SECONDS, operation.remaining_seconds()))
+        timeout = min(_MAX_READ_SECONDS, max(_MIN_READ_SECONDS, operation.remaining_seconds()))
+        try:
+            row = _status_for(client, target, timeout=timeout)
+        except RateLimited as exc:
+            _park(operation, time.time() + exc.retry_after)
+            return
         if row is None:
             continue
         _apply_read(operation, target, str(row.get("status") or "").lower(), str(row.get("statusReason") or ""))
