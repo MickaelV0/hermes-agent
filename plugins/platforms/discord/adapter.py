@@ -639,6 +639,25 @@ def _discord_ready_timeout_seconds() -> float:
     return 30.0
 
 
+def _callback_accepts(callback, name: str) -> bool:
+    """True when ``callback`` declares keyword ``name`` (or **kwargs). Mirrors the
+    signature-inspection rule used for plugin hook payloads."""
+    import functools as _ft
+    import inspect as _inspect
+    target = callback
+    while isinstance(target, _ft.partial):
+        if name in (target.keywords or {}):
+            return True
+        target = target.func
+    try:
+        params = _inspect.signature(target).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(p.kind is _inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 class VoiceReceiver:
     """Captures voice audio from a Discord voice channel: hooks the VoiceClient socket, decrypts
     RTP (NaCl + DAVE E2EE), decodes Opus per user; a polling loop delivers utterances on silence."""
@@ -3786,10 +3805,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
             if self._voice_input_callback:
-                await self._voice_input_callback(
-                    guild_id=guild_id, user_id=user_id, transcript=transcript,
-                    authorized=authorized,
-                )
+                # Signature-inspected like plugin hooks: a narrow callback that never declared
+                # `authorized` keeps its original signature (plugins/AGENTS.md compat contract).
+                kwargs = {
+                    "guild_id": guild_id, "user_id": user_id, "transcript": transcript,
+                }
+                if _callback_accepts(self._voice_input_callback, "authorized"):
+                    kwargs["authorized"] = authorized
+                elif not authorized:
+                    # No way to tell the consumer this speaker is unauthorized — do not hand it
+                    # a transcript it would treat as an addressed request.
+                    logger.debug(
+                        "Voice callback lacks 'authorized'; dropping bystander transcript user=%s",
+                        user_id)
+                    return
+                await self._voice_input_callback(**kwargs)
         except Exception as e:
             # Surface ffmpeg's captured stderr from CalledProcessError, else log just says "exit status N".
             _ff_err = getattr(e, "stderr", None)
