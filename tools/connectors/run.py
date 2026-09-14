@@ -70,6 +70,9 @@ def _watch(operation: ConnectionOperation, kind: Kind, tick_seconds: Optional[fl
     from tools.interrupt import is_interrupted
 
     tick = WATCH_INTERVAL_SECONDS if tick_seconds is None else tick_seconds
+    if is_interrupted():
+        operation.settle(SettleReason.interrupt)
+        return
     kind.observe(operation)
     operation.settle_if_all_resolved()
     while not operation.settled:

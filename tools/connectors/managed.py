@@ -82,8 +82,9 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
             continue
         terminal = _TERMINAL_LIST_STATUS.get(str(row.get("connectionStatus") or "").lower())
         if terminal is not None and target.state == TargetState.initiated:
-            operation.transition(target.name, terminal, Actor.backend_watcher,
-                                 detail=target.detail or str(row.get("statusReason") or ""))
+            # `expired` is the link TTL running out; the gateway reports it, the clock caused it.
+            actor = Actor.clock if terminal == TargetState.expired else Actor.backend_watcher
+            operation.transition(target.name, terminal, actor, detail=target.detail or str(row.get("statusReason") or ""))
 
 
 def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOperation], None]:

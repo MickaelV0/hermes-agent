@@ -111,9 +111,9 @@ def _agent_cbs(sid: str) -> dict:
         "drive_preview_callback": lambda payload: _block("preview.act.request", sid, dict(payload), timeout=45),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _block("window.read.request", sid, {}, timeout=30),
-        # manage_connections approval card; waits the operation's deadline, a late answer is accepted.
-        "connection_callback": lambda payload: _block(
-            "connection.request", sid, dict(payload), timeout=float(payload.get("timeout_seconds") or 120)),
+        # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
+        # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
+        "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers tour.respond.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 

@@ -2,7 +2,6 @@ import type {
   ConnectionOperationStatus,
   ConnectionOperationTarget,
   ConnectionRequestPayload,
-  ConnectionRequestTarget,
   ConnectionSettleReason,
   ConnectionTargetAction,
   ConnectionTargetKind,
@@ -90,26 +89,21 @@ const targetState = oneOf(TARGET_STATES)
 const targetAction = oneOf(ACTIONS)
 const settleReason = oneOf(SETTLE_REASONS)
 
-// The request payload names targets without state; a resume snapshot may carry a live snapshot row.
-type WireTarget = ConnectionRequestTarget | ConnectionOperationTarget
-
-function parseTarget(entry: WireTarget): ConnectionTarget | null {
+function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
   const name = entry.name.trim()
 
   if (!name) {
     return null
   }
 
-  const live = 'state' in entry ? entry : null
-
   return {
     action: targetAction(entry.action) ?? 'install',
-    connectUrl: live?.connect_url ?? null,
-    detail: live?.detail ?? '',
+    connectUrl: entry.connect_url ?? null,
+    detail: entry.detail ?? '',
     kind: entry.kind === 'connector' ? 'connector' : 'mcp',
     name,
-    state: targetState(live?.state) ?? 'pending',
-    tools: live?.tools ?? []
+    state: targetState(entry.state) ?? 'pending',
+    tools: entry.tools ?? []
   }
 }
 
@@ -150,50 +144,51 @@ export function applyOperationStatus(request: ConnectionRequest, status: Connect
 
   const byName = new Map(status.targets.map(target => [target.name, target] as const))
 
-  return {
-    ...request,
-    deadlineAt: status.deadline_at,
-    settled: status.settled,
-    settledBy: settleReason(status.settled_by) ?? null,
-    targets: request.targets.map(target => {
-      const live: ConnectionOperationTarget | undefined = byName.get(target.name)
+  const targets = request.targets.map(target => {
+    const live: ConnectionOperationTarget | undefined = byName.get(target.name)
 
-      return live ? mergeLiveTarget(target, live) : target
-    })
-  }
+    return live ? mergeLiveTarget(target, live) : target
+  })
+
+  const settledBy = settleReason(status.settled_by) ?? null
+
+  // Same reference on a no-op so subscribers do not re-render for an identical frame.
+  const unchanged =
+    request.deadlineAt === status.deadline_at &&
+    request.settled === status.settled &&
+    request.settledBy === settledBy &&
+    targets.every((target, index) => target === request.targets[index])
+
+  return unchanged ? request : { ...request, deadlineAt: status.deadline_at, settled: status.settled, settledBy, targets }
 }
 
 function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
-  return {
+  const next: ConnectionTarget = {
     ...target,
     connectUrl: live.connect_url ?? target.connectUrl,
     detail: live.detail ?? target.detail,
     state: live.state,
     tools: live.tools ?? target.tools
   }
+
+  const same =
+    next.connectUrl === target.connectUrl &&
+    next.detail === target.detail &&
+    next.state === target.state &&
+    next.tools.length === target.tools.length &&
+    next.tools.every((tool, index) => tool === target.tools[index])
+
+  return same ? target : next
 }
 
-/** Apply one `connection.update` frame. Frames for another operation or for a settled request are ignored. */
+/** Apply one `connection.update` frame. Every frame carries the operation's full target snapshot, so
+ *  the store overlays it; frames for another operation or for a settled request are ignored. */
 export function applyConnectionUpdate(request: ConnectionRequest, update: ConnectionUpdatePayload): ConnectionRequest {
   if (update.op_id !== request.opId || request.settled) {
     return request
   }
 
-  const to = targetState(update.to)
-
-  const targets =
-    update.target && to
-      ? request.targets.map(target =>
-          target.name === update.target ? { ...target, detail: update.detail ?? target.detail, state: to } : target
-        )
-      : request.targets
-
-  return {
-    ...request,
-    settled: update.settled,
-    settledBy: settleReason(update.settled_by) ?? request.settledBy,
-    targets
-  }
+  return applyOperationStatus(request, update)
 }
 
 export function setConnectionRequest(request: ConnectionRequest): void {

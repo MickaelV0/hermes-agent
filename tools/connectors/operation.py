@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 from tools.connectors.contract import RESOLVED_STATES, Actor, SettleReason, TargetState, allowed
 
@@ -49,6 +49,9 @@ class Target:
 
 @dataclass
 class ConnectionOperation:
+    # The gateway installs its ``connection.update`` emitter here once; pure data otherwise.
+    on_change: ClassVar[Optional[Callable[["ConnectionOperation", Optional[Dict[str, Any]]], None]]] = None
+
     targets: List[Target]
     session_key: str = ""
     op_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -94,7 +97,22 @@ class ConnectionOperation:
             if extra:
                 target.extra = dict(extra)
         self.wake.set()
+        self._changed(change)
         return change
+
+    def refresh_link(self, name: str, connect_url: str) -> None:
+        """A re-minted link for a target already waiting on one; not a state change."""
+        target = self.target(name)
+        if target is None:
+            return
+        with self._lock:
+            target.connect_url = connect_url
+        self._changed({"target": name, "connect_url": connect_url})
+
+    def _changed(self, change: Optional[Dict[str, Any]]) -> None:
+        hook = type(self).on_change
+        if hook is not None:
+            hook(self, change)
 
     @property
     def all_resolved(self) -> bool:
@@ -120,6 +138,7 @@ class ConnectionOperation:
                     target.state = TargetState.not_connected
             self._settled_snapshot = self._snapshot_locked()
         self.wake.set()
+        self._changed(None)
         return True
 
     def settle_if_all_resolved(self) -> bool:
@@ -146,11 +165,14 @@ class ConnectionOperation:
             return self._snapshot_locked(with_urls=with_urls)
 
     def request_payload(self, reason: str = "") -> Dict[str, Any]:
-        """The ``connection.request`` payload: identity, targets, server-owned deadline."""
+        """The ``connection.request`` payload: identity, live target snapshots (links included, the
+        panel owns them), server-owned deadline."""
+        with self._lock:
+            targets = [t.snapshot() for t in self.targets]
         return {
             "op_id": self.op_id,
             "deadline_at": self.deadline_at,
             "timeout_seconds": OPERATION_DEADLINE_SECONDS,
             "reason": reason or "",
-            "targets": [{"name": t.name, "kind": t.kind, "action": t.action} for t in self.targets],
+            "targets": targets,
         }

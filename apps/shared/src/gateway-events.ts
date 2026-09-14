@@ -375,12 +375,6 @@ export type ConnectionActor = 'backend_watcher' | 'clock' | 'renderer_flow' | 'u
 export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt' | 'unavailable'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
 
-export interface ConnectionRequestTarget {
-  action: ConnectionTargetAction
-  kind: ConnectionTargetKind
-  name: string
-}
-
 /** `tools/connectors/operation.py::request_payload`, emitted through
  *  `tui_gateway/agent_callbacks.py::connection_callback`. `request_id` is absent on a
  *  `pending_connection` resume snapshot, which is the same payload read from the live operation. */
@@ -389,7 +383,8 @@ export interface ConnectionRequestPayload {
   op_id: string
   reason?: string
   request_id?: string
-  targets: ConnectionRequestTarget[]
+  /** Live target snapshots: links minted up front ride here, the model result never sees them. */
+  targets: ConnectionOperationTarget[]
   timeout_seconds?: number
 }
 
@@ -415,16 +410,14 @@ export interface ConnectionOperationStatus {
   targets: ConnectionOperationTarget[]
 }
 
-/** One target transition, or the settlement, of a connection operation
- *  (`tui_gateway/methods_connectors.py::_connection_update`). `target`/`from`/`to`/`actor`
- *  are present on a transition and absent on the settlement frame. */
-export interface ConnectionUpdatePayload {
+/** One change to a connection operation (`tui_gateway/methods_connectors.py::_connection_update`):
+ *  a target transition (`target`/`from`/`to`/`actor`), a link refresh (`target`/`connect_url`), or the
+ *  settlement (none of those). Every frame carries the full operation snapshot. */
+export interface ConnectionUpdatePayload extends ConnectionOperationStatus {
   actor?: ConnectionActor
+  connect_url?: string
   detail?: string
   from?: ConnectionTargetState
-  op_id: string
-  settled: boolean
-  settled_by?: ConnectionSettleReason | null
   target?: string
   to?: ConnectionTargetState
 }

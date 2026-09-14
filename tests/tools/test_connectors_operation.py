@@ -79,7 +79,9 @@ def test_target_keeps_the_link_and_the_mint_detail_across_transitions():
     assert snap["detail"] == "vendor said no"
 
 
-def test_request_payload_carries_kind_connector_and_action():
+def test_request_payload_carries_the_live_target_snapshot():
     operation = op.ConnectionOperation([op.Target("gmail", "connector", "reconnect")])
+    operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher, connect_url="https://l/gmail")
     (target,) = operation.request_payload()["targets"]
-    assert target == {"name": "gmail", "kind": "connector", "action": "reconnect"}
+    assert target == {"name": "gmail", "kind": "connector", "action": "reconnect", "state": "initiated",
+                      "connect_url": "https://l/gmail"}

@@ -122,33 +122,11 @@ def run_mcp_operation(
     targets = [Target(n, "mcp", action) for n in names]
     if connection_callback is None:
         return _unavailable(ConnectionOperation(targets, session_key=str(session_id or "")))
-    # PR1-era bridge: the callback blocks and returns the card's answer. The renderer is the only
-    # observer of an MCP flow, so the answer IS the observation and the loop settles right after.
     def prepare(operation: ConnectionOperation) -> None:
         pass
 
-    def blocking_callback(payload: Dict[str, Any]) -> Optional[str]:
-        operation = _current(payload["op_id"], session_id)
-        raw = connection_callback(payload)
-        if operation is not None:
-            if raw:
-                apply_answer(operation, raw)
-                if not operation.settled:
-                    operation.settle(SettleReason.all_resolved if operation.all_resolved else SettleReason.continue_)
-            else:
-                from tools.interrupt import is_interrupted
-
-                operation.settle(SettleReason.interrupt if is_interrupted() else SettleReason.deadline)
-        return raw
-
     return run_operation(
         targets, Kind(prepare=prepare, observe=lambda op: None, note=NOTE),
-        session_key=str(session_id or ""), reason=reason, connection_callback=blocking_callback,
+        session_key=str(session_id or ""), reason=reason, connection_callback=connection_callback,
         with_urls_in_result=False,
     )
-
-
-def _current(op_id: str, session_id: Optional[str]) -> Optional[ConnectionOperation]:
-    from tools.connectors import live
-
-    return live.get(str(session_id or ""), op_id)

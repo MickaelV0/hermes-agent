@@ -138,12 +138,13 @@ def _reissue(rid, operation, args):
         target = operation.target(name)
         if target is None:
             continue
+        url = entry.get("connect_url")
         if target.state in (TargetState.failed, TargetState.expired):
             operation.transition(name, TargetState.initiated, Actor.user,
-                                 connect_url=entry.get("connect_url"), detail=str(entry.get("status_reason") or ""))
-        elif target.state == TargetState.initiated and entry.get("connect_url"):
-            target.connect_url = entry["connect_url"]
-    return _ok(rid, connector_ui_payload(operation.result()))
+                                 connect_url=url, detail=str(entry.get("status_reason") or ""))
+        elif target.state == TargetState.initiated and url:
+            operation.refresh_link(name, url)
+    return _ok(rid, connector_ui_payload(_operation_view(operation)))
 
 
 def _live_operation(rid, params, owner):
@@ -212,39 +213,30 @@ def _operation_view(operation):
     return {**operation.result(), "settled": operation.settled}
 
 
-def _connection_update(session_key, operation, change=None):
-    """Emit ``connection.update`` for one transition or for settlement."""
+def _connection_update(operation, change=None):
+    """Emit ``connection.update`` for one transition, a link refresh, or settlement. Every frame
+    carries the full target snapshot so the renderer never reconstructs state from deltas."""
     from tui_gateway import server
 
-    sid = next((s for s, c in list(server._sessions.items()) if c.get("session_key") == session_key), None)
+    with server._sessions_lock:
+        sid = next((s for s, c in server._sessions.items() if c.get("session_key") == operation.session_key), None)
     if sid is None:
         return
-    payload = {"op_id": operation.op_id, "settled": operation.settled,
-               "settled_by": operation.settled_by.value if operation.settled_by else None}
+    payload = _operation_view(operation)
     if change:
         payload.update(change)
     server._emit("connection.update", sid, payload)
 
 
 def _install_update_hook():
+    """Route every operation change through ``_connection_update``. Idempotent: ``register`` can run
+    more than once (reload, tests) and must not stack wrappers."""
     from tools.connectors import operation as op_module
 
-    original_transition, original_settle = op_module.ConnectionOperation.transition, op_module.ConnectionOperation.settle
-
-    def transition(self, *args, **kwargs):
-        change = original_transition(self, *args, **kwargs)
-        if change:
-            _connection_update(self.session_key, self, change)
-        return change
-
-    def settle(self, *args, **kwargs):
-        settled = original_settle(self, *args, **kwargs)
-        if settled:
-            _connection_update(self.session_key, self)
-        return settled
-
-    op_module.ConnectionOperation.transition = transition
-    op_module.ConnectionOperation.settle = settle
+    if getattr(op_module.ConnectionOperation, "_update_hook_installed", False):
+        return
+    op_module.ConnectionOperation._update_hook_installed = True
+    op_module.ConnectionOperation.on_change = staticmethod(_connection_update)
 
 
 def register(server):
