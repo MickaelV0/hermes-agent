@@ -146,7 +146,7 @@ describe('ConnectorTool operation card', () => {
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
-        result: JSON.stringify({ targets: [{ name: 'gmail', status: 'skipped' }] }),
+        result: { targets: [{ name: 'gmail', status: 'skipped' }] },
         session_id: SESSION_ID
       })
     })
