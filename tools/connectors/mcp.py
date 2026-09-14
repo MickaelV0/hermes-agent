@@ -462,10 +462,14 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
             continue
         status = str(entry.get("status") or "").lower()
         if status == "skipped":
-            # A row the backend resolved a moment before the answer arrived has nothing to move; the
-            # rest of the answer still applies. A settled operation is frozen.
-            if not target.resolved and not operation.settled:
+            # A row the backend resolved before this move landed has nothing to move; the rest of
+            # the answer still applies. A settled operation is frozen. The check and the move are
+            # not one step, so the refusal itself is the witness, not a read taken before it.
+            try:
                 operation.transition(target.name, TargetState.skipped, Actor.user)
+            except IllegalTransition:
+                if not target.resolved and not operation.settled:
+                    raise
         elif status == "approved" and runner is not None and target.state == TargetState.pending:
             runner.run(_APPROVE, operation, target, _answer_env(entry))
     if answer.get("settled_by") == SettleReason.continue_.value and not operation.all_resolved:

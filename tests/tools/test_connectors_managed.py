@@ -467,7 +467,8 @@ def test_a_rate_limit_parks_every_live_target_not_only_the_one_that_read():
     operation = _two_initiated_targets()
 
     class Limited:
-        reads = []
+        def __init__(self):
+            self.reads = []
 
         def account_status(self, connection_id, *, timeout=None):
             self.reads.append(connection_id)
@@ -504,7 +505,9 @@ def test_a_read_never_waits_longer_than_ten_seconds_whatever_the_deadline():
     assert operation.remaining_seconds() > 200
 
     class Recording(_OneRead):
-        timeouts = []
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.timeouts = []
 
         def account_status(self, connection_id, *, timeout=None):
             self.timeouts.append(timeout)

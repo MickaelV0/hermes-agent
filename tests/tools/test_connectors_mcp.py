@@ -545,6 +545,29 @@ def test_a_skip_of_a_row_that_already_connected_is_ignored_and_the_rest_of_the_a
     assert operation.result()["targets"][2]["state"] == TargetState.not_connected.value
 
 
+def test_a_skip_that_loses_the_race_to_the_watcher_is_ignored_not_raised(monkeypatch):
+    """The resolved check and the transition are two steps; the watcher can connect the row between
+    them. The refused move is the same nothing-to-do as a row resolved before the answer arrived."""
+    operation = ConnectionOperation([Target(n, "mcp", "enable") for n in ("paper", "linear")], session_key="s1")
+    operation.transition("paper", TargetState.initiated, Actor.backend_watcher)
+    real = operation.transition
+
+    def racing(name, to, actor, **fields):
+        if name == "paper" and to == TargetState.skipped:
+            real("paper", TargetState.connected, Actor.backend_watcher)  # the watcher lands first
+        return real(name, to, actor, **fields)
+
+    monkeypatch.setattr(operation, "transition", racing)
+    apply_answer(operation, json.dumps({
+        "targets": [{"name": "paper", "status": "skipped"}, {"name": "linear", "status": "skipped"}],
+        "settled_by": "continue",
+    }))
+
+    assert operation.target("paper").state == TargetState.connected
+    assert operation.target("linear").state == TargetState.skipped  # the rest of the answer landed
+    assert operation.all_resolved
+
+
 def test_try_again_on_a_settled_operation_starts_no_work(backend):
     runner, operation = _runner_for("enable", backend, "paper")
     operation.settle(SettleReason.continue_)
