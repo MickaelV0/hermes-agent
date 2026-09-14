@@ -202,12 +202,14 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
     assert operation.target("notion").connect_url == "https://l/notion/2"
 
 
-def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch):
+@pytest.mark.parametrize("dead", [TargetState.failed, TargetState.expired])
+def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch, dead):
     """Try again whose mint fails must not show the row as waiting on the old dead link."""
     owner, _, _ = owned
     operation = _open_op()
     operation.transition("notion", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/notion/1")
-    operation.transition("notion", TargetState.failed, Actor.backend_watcher, detail="vendor: nope")
+    actor = Actor.clock if dead == TargetState.expired else Actor.backend_watcher
+    operation.transition("notion", dead, actor, detail="vendor: nope")
 
     class Client:
         def connections(self, names, *, reinitiate=False):

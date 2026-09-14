@@ -64,9 +64,15 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
             )
         elif target.state == TargetState.failed:
             # Failed again: no state change to emit, but the old link is dead and the vendor's text is new.
-            operation.refresh(name, connect_url=None, detail=detail or status)
+            operation.refresh(name, connect_url=None, detail=detail)
+        elif target.state == TargetState.expired:
+            # The table has no expired → failed; the re-mint attempt is the user's, so step through initiated.
+            operation.transition(name, TargetState.initiated, actor)
+            operation.transition(name, TargetState.failed, Actor.backend_watcher, detail=detail)
+            operation.refresh(name, connect_url=None, detail=detail)
         else:
-            operation.transition(name, TargetState.failed, Actor.backend_watcher, detail=detail or status)
+            # `detail` is the vendor's text or empty; the state itself is never written into it (the card prints it).
+            operation.transition(name, TargetState.failed, Actor.backend_watcher, detail=detail)
 
 
 def _observe(client: Any, operation: ConnectionOperation) -> None:
@@ -83,16 +89,17 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
         row = status.get(target.name)
         if row is None:
             continue
+        row_status = str(row.get("connectionStatus") or "").lower()
         if target.awaiting_new_attempt:
-            if str(row.get("connectionStatus") or "").lower() == "initiated":
-                target.awaiting_new_attempt = False
-            continue
+            if row.get("connected") or row_status == "active":
+                continue
+            target.awaiting_new_attempt = False
         if row.get("connected"):
             if target.state == TargetState.pending:
                 operation.transition(target.name, TargetState.initiated, Actor.backend_watcher)
             operation.transition(target.name, TargetState.connected, Actor.backend_watcher)
             continue
-        terminal = _TERMINAL_LIST_STATUS.get(str(row.get("connectionStatus") or "").lower())
+        terminal = _TERMINAL_LIST_STATUS.get(row_status)
         if terminal is not None and target.state == TargetState.initiated:
             # `expired` is the link TTL running out; the gateway reports it, the clock caused it.
             actor = Actor.clock if terminal == TargetState.expired else Actor.backend_watcher

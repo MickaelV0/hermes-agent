@@ -206,13 +206,38 @@ def test_reconnect_force_always_reinitiates_even_when_active():
 
 def test_force_does_not_settle_connected_from_the_old_account():
     """An account switch: the vendor keeps the old account active while the new link waits. `connected`
-    on the list is the old account until the list has shown the new attempt (`initiated`) once."""
+    on the list is the old account until the row has read as anything else once."""
     gw = GatewayFake(connected={"gmail"})
-    gw.statuses = {"gmail": ["active", "active", "initiated", "active"]}
+    gw.statuses = {"gmail": ["active", "active", "initializing", "active"]}
     out = _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=_desktop_callback(), tick=0.01)
     assert out["settled_by"] == "all_resolved"
     assert out["targets"][0]["state"] == "connected"
-    assert gw.lists == 4  # reads 1-2 were the old account; 3 saw the new attempt; 4 saw it connected
+    assert gw.lists == 4  # reads 1-2 were the old account; 3 was the new attempt; 4 saw it connected
+
+
+def test_force_reads_a_failed_new_attempt_as_failed_not_as_still_waiting():
+    gw = GatewayFake(connected={"gmail"})
+    gw.statuses = {"gmail": ["active", "failed"]}
+    seen = []
+
+    def cb(payload):
+        op_id["v"] = payload["op_id"]
+
+    op_id = {}
+    original = gw.list_connectors
+
+    def spy():
+        rows = original()
+        op = live.get("s1", op_id["v"]) if op_id else None
+        if op is not None:
+            seen.append(op.target("gmail").state.value)
+        return rows
+
+    gw.list_connectors = spy
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2):
+        _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=cb, tick=0.01)
+    # Read 1 saw the old account (still initiated); the failed row on read 2 was applied, not swallowed.
+    assert "failed" in seen
 
 
 def test_reconnect_on_a_disconnected_target_reinitiates():

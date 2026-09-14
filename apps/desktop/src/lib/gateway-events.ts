@@ -26,7 +26,6 @@ export const UNSCOPED_STREAM_EVENT_TYPES = new Set([
   'approval.request',
   'browser.progress',
   'clarify.request',
-  'connection.expire',
   'connection.request',
   'error',
   'message.complete',
