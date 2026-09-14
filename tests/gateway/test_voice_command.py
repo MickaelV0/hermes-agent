@@ -356,6 +356,51 @@ class TestSendVoiceReply:
             "notify": True,
         }
 
+    def test_discord_joined_vc_mirrors_other_chat_text(self, runner):
+        """Cron/#home text while the bot is in a VC still gets auto-TTS in the stream."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource as _SS
+
+        adapter = MagicMock()
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=False)
+        adapter.connected_voice_guild_id = MagicMock(return_value=111)
+        runner.adapters[Platform.DISCORD] = adapter
+        source = _SS(chat_id="1548736999433834516", user_id="user1", platform=Platform.DISCORD)
+        event = MessageEvent(text="tick", message_type=MessageType.TEXT, source=source)
+        assert runner._should_send_voice_reply(event, "Cron done.", []) is True
+
+    def test_discord_joined_vc_skips_silent_and_ok(self, runner):
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource as _SS
+
+        adapter = MagicMock()
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=False)
+        adapter.connected_voice_guild_id = MagicMock(return_value=111)
+        runner.adapters[Platform.DISCORD] = adapter
+        source = _SS(chat_id="home", user_id="user1", platform=Platform.DISCORD)
+        event = MessageEvent(text="tick", message_type=MessageType.TEXT, source=source)
+        assert runner._should_send_voice_reply(event, "[SILENT]", []) is False
+        assert runner._should_send_voice_reply(event, "OK", []) is False
+
+
+def test_oralize_skips_short_spoken():
+    from gateway.run_voice import oralize_for_discord_vc
+    src = "Le cron du matin est passé. Rien d'urgent."
+    assert oralize_for_discord_vc(src) == src
+
+
+def test_oralize_rewrites_long_markdown(monkeypatch):
+    from gateway import run_voice
+    from types import SimpleNamespace
+
+    def fake_llm(**kwargs):
+        assert kwargs["task"] == "discord_vc_oral"
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Cron ok. Deux tickets ouverts."))])
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_llm)
+    long = "## Recap\n" + ("- item path /home/mickael/foo\n" * 40)
+    assert run_voice.oralize_for_discord_vc(long) == "Cron ok. Deux tickets ouverts."
+
 
 # =====================================================================
 # Discord play_tts skip when in voice channel
@@ -401,6 +446,26 @@ class TestDiscordPlayTtsSkip:
         result = await adapter.play_tts(chat_id="123", audio_path="/tmp/test.ogg")
         # play_tts now plays in VC instead of being a no-op
         assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_play_tts_plays_in_vc_for_unbound_chat(self):
+        adapter = self._make_discord_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_text_channels[111] = 123
+        played = []
+
+        async def fake_play(guild_id, audio_path):
+            played.append((guild_id, audio_path))
+            return True
+        adapter.play_in_voice_channel = fake_play
+        adapter.send_voice = AsyncMock()
+
+        result = await adapter.play_tts(chat_id="999999", audio_path="/tmp/other.ogg")
+        assert result.success is True
+        assert played == [(111, "/tmp/other.ogg")]
+        adapter.send_voice.assert_not_called()
 
 
 # =====================================================================

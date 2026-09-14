@@ -28,6 +28,59 @@ logger = logging.getLogger("gateway.run")  # log-record parity with the origin m
 _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
 
+_ORAL_CHAR_SKIP = 420
+_ORAL_SYS = (
+    "Tu réécris un message d'agent pour le dire à voix haute en français, "
+    "dans un vocal Discord. 2 à 5 phrases courtes. Un fil, pas de liste, "
+    "pas de markdown, pas de chemins complets, pas d'URLs. "
+    "Garde uniquement les faits utiles. N'invente rien. "
+    "Sortie = uniquement le script parlé, rien d'autre."
+)
+
+
+def _aux_reply_text(response) -> str:
+    try:
+        message = getattr(response.choices[0], "message", None)
+        content = message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
+        return str(content or "").strip()
+    except Exception:
+        return ""
+
+
+def _truncate_spoken(text: str, limit: int = 500) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= limit:
+        return compact
+    cut = compact[:limit]
+    for sep in (". ", "! ", "? ", "; "):
+        idx = cut.rfind(sep)
+        if idx >= 80:
+            return cut[: idx + 1].strip()
+    return cut.rsplit(" ", 1)[0].strip() or cut
+
+
+def oralize_for_discord_vc(text: str) -> str:
+    """Rewrite a written agent final into a short spoken FR script. Fallback = stripped prose."""
+    from tools.tts_text_normalize import _strip_markdown_for_tts
+    stripped = (_strip_markdown_for_tts(text) or "").strip()
+    if not stripped:
+        return ""
+    if len(stripped) <= _ORAL_CHAR_SKIP and stripped.count("\n") <= 3:
+        return " ".join(stripped.split())
+    try:
+        from agent.auxiliary_client import call_llm
+        response = call_llm(
+            task="discord_vc_oral", temperature=0.3, max_tokens=400,
+            messages=[{"role": "system", "content": _ORAL_SYS},
+                      {"role": "user", "content": stripped[:6000]}],
+        )
+        spoken = _aux_reply_text(response)
+        if spoken:
+            return spoken
+    except Exception as exc:
+        logger.warning("Discord VC oral rewrite failed; using stripped prose: %s", exc)
+    return _truncate_spoken(stripped)
+
 
 class GatewayVoiceMixin:
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
@@ -282,8 +335,18 @@ class GatewayVoiceMixin:
     ) -> bool:
         """False when voice_mode is off for this chat, the response is empty/an error, the agent
         already called text_to_speech this turn, or voice input + base adapter auto-TTS handled it
-        — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
+        — UNLESS streaming consumed the response (already_sent): then the runner must do it.
+
+        Discord exception: if the bot is already in a VC, finals from *any* Discord chat (cron,
+        heartbeat, #home, …) also get auto-TTS in that stream. Default text delivery is unchanged.
+        Silence markers and a bare ``OK`` stay quiet."""
         if not response or response.startswith("Error:"):
+            return False
+        from gateway.response_filters import (
+            is_autonomous_silence_response, is_intentional_silence_response)
+        if is_intentional_silence_response(response) or is_autonomous_silence_response(response):
+            return False
+        if isinstance(response, str) and response.strip().upper() in {"OK", "OK."}:
             return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
@@ -292,13 +355,19 @@ class GatewayVoiceMixin:
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
+        joined_vc = False
+        if event.source.platform == Platform.DISCORD:
+            getter = getattr(adapter, "connected_voice_guild_id", None)
+            if callable(getter):
+                with suppress(Exception):
+                    joined_vc = getter() is not None
         # ``voice.auto_tts`` (synced into the adapter at startup) is the fallback only when the
         # chat has no explicit mode; the chat-level all/voice_only/off choice takes precedence.
         if not (voice_mode == "all" or (voice_mode == "voice_only" and is_voice_input)
-                or (voice_mode is None and adapter_auto_tts)):
+                or (voice_mode is None and adapter_auto_tts) or joined_vc):
             logger.debug(
-                "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
-                voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
+                "Auto voice reply skipped: mode=%s adapter_auto_tts=%s joined_vc=%s chat=%s platform=%s",
+                voice_mode, adapter_auto_tts, joined_vc, chat_id, event.source.platform.value)
             return False
         # Dedup: agent already called the TTS tool in THIS turn (from the last user message on).
         start = next((i for i, m in reversed(list(enumerate(agent_messages)))
@@ -322,7 +391,17 @@ class GatewayVoiceMixin:
         try:
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
-            tts_text = _strip_markdown_for_tts(text)
+            adapter = self._adapter_for_source(event.source)
+            in_vc = False
+            if event.source.platform == Platform.DISCORD:
+                getter = getattr(adapter, "connected_voice_guild_id", None)
+                if callable(getter):
+                    with suppress(Exception):
+                        in_vc = getter() is not None
+            if in_vc:
+                tts_text = await asyncio.to_thread(oralize_for_discord_vc, text)
+            else:
+                tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
                 return
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
@@ -353,7 +432,13 @@ class GatewayVoiceMixin:
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._adapter_for_source(event.source)
-        guild_id = self._get_guild_id(event)
+        guild_id = None
+        getter = getattr(adapter, "connected_voice_guild_id", None)
+        if callable(getter):
+            with suppress(Exception):
+                guild_id = getter()
+        if guild_id is None:
+            guild_id = self._get_guild_id(event)
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)
         if guild_id and callable(play) and callable(is_in_vc) and is_in_vc(guild_id):

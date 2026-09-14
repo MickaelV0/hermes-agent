@@ -2813,12 +2813,18 @@ class GatewayTurnMixin:
         # Discord voice "verbal ack" on the FIRST tool call (discord.voice_fx.enabled): resolve the
         # guild whose voice connection is bound to this text channel (mirrors DiscordAdapter.play_tts).
         _voice_ack_guild: List[Optional[int]] = [None]
+        _va = None
         if source.platform == Platform.DISCORD:
             _va = self.adapters.get(Platform.DISCORD)
             _vtc = getattr(_va, "_voice_text_channels", None)
-            if isinstance(_vtc, dict) and hasattr(_va, "voice_mixer_active"):
+            if isinstance(_vtc, dict) and _va is not None:
                 _voice_ack_guild[0] = next(
-                    (_gid for _gid, _tc in _vtc.items() if str(_tc) == str(source.chat_id) and _va.voice_mixer_active(_gid)),
+                    (
+                        _gid for _gid, _tc in _vtc.items()
+                        if str(_tc) == str(source.chat_id)
+                        and hasattr(_va, "is_in_voice_channel")
+                        and _va.is_in_voice_channel(_gid)
+                    ),
                     None,
                 )
 
@@ -2843,6 +2849,15 @@ class GatewayTurnMixin:
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
+        if (
+            _voice_ack_guild[0] is not None
+            and _va is not None
+            and hasattr(_va, "start_thinking_bed")
+        ):
+            with suppress(Exception):
+                asyncio.get_running_loop().create_task(
+                    _va.start_thinking_bed(_voice_ack_guild[0])
+                )
         turn_runner = TurnRunner(self, turn_ctx)
         # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
         turn_ctx.progress_callback = turn_runner.progress_callback

@@ -1540,6 +1540,19 @@ class TurnRunner:
             return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
+            gid = ctx._voice_ack_guild[0]
+            if gid is not None:
+                adapter = self._runner.adapters.get(Platform.DISCORD)
+                stop_bed = getattr(adapter, "stop_thinking_bed", None) if adapter is not None else None
+                if callable(stop_bed):
+                    try:
+                        self._schedule(
+                            stop_bed(gid),
+                            "stop thinking bed",
+                            loop=ctx._voice_ack_loop,
+                        )
+                    except Exception:
+                        pass
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):

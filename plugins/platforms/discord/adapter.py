@@ -816,6 +816,10 @@ class VoiceReceiver:
         if self._dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
+            if not user_id:
+                # Map before decrypt. Buffering ciphertext-as-Opus yields silence;
+                # VAD then drops the whole utterance (no STT, no reply).
+                user_id = self._infer_user_for_ssrc(ssrc)
             if user_id:
                 try:
                     import davey
@@ -825,10 +829,12 @@ class VoiceReceiver:
                 except Exception as e:
                     # Unencrypted passthrough — use NaCl-decrypted data as-is
                     if "Unencrypted" not in str(e):
-                        if self._packet_debug_count <= 10:
-                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
+                        if self._packet_debug_count <= 10 or self._packet_debug_count % 200 == 0:
+                            logger.warning("DAVE decrypt failed for ssrc=%d user=%s: %s", ssrc, user_id, e)
                         return
-            # Unknown SSRC (no SPEAKING yet): skip DAVE, try Opus directly; user_id arrives with SPEAKING.
+            else:
+                # No user_id yet: do not Opus-decode DAVE ciphertext.
+                return
         try:
             if ssrc not in self._decoders:
                 self._decoders[ssrc] = discord.opus.Decoder()
@@ -3152,12 +3158,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
-        """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
-        for gid, text_ch_id in self._voice_text_channels.items():
-            if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
-                logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
-                success = await self.play_in_voice_channel(gid, audio_path)
-                return SendResult(success=success)
+        """Play auto-TTS in a joined VC (any originating text chat), else as a file attachment."""
+        gid = self.connected_voice_guild_id()
+        if gid is not None:
+            logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
+            success = await self.play_in_voice_channel(gid, audio_path)
+            return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
 
@@ -3288,9 +3294,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             duck_gain=float(self._voice_fx_cfg.get("duck_gain", 0.06)),
             speech_gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
         )
-        ambient = await asyncio.to_thread(self._get_ambient_pcm)
-        if ambient:
-            mixer.set_ambient(ambient)
 
         def _after(error):
             if error:
@@ -3299,7 +3302,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             vc.stop()
         vc.play(mixer, after=_after)
         self._voice_mixers[guild_id] = mixer
-        logger.info("Voice mixer installed (guild=%d, ambient=%s)", guild_id, bool(ambient))
+        logger.info("Voice mixer installed (guild=%d, idle-silent)", guild_id)
 
     def _lead_silence_bytes(self) -> bytes:
         """Silence prepended to speech clips: Discord's voice socket warm-up otherwise clips
@@ -3364,6 +3367,57 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
+    async def start_thinking_bed(self, guild_id: int) -> bool:
+        """Very light pad while the agent is thinking. Idle VC stays silent (no speaking ring)."""
+        fx = getattr(self, "_voice_fx_cfg", {}) or {}
+        if not fx.get("enabled") or not fx.get("ambient_enabled", True):
+            return False
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return False
+        try:
+            if not self.voice_mixer_active(guild_id):
+                await self._install_voice_mixer(guild_id, vc)
+            mixer = self._voice_mixers.get(guild_id)
+            if mixer is None:
+                return False
+            pcm = await asyncio.to_thread(self._get_ambient_pcm)
+            if not pcm:
+                return False
+            mixer.set_ambient(pcm)
+            if not vc.is_playing():
+                await self._install_voice_mixer(guild_id, vc)
+                mixer = self._voice_mixers.get(guild_id)
+                if mixer is not None:
+                    mixer.set_ambient(pcm)
+            logger.info("Thinking bed on (guild=%d)", guild_id)
+            return True
+        except Exception as e:
+            logger.debug("start_thinking_bed failed: %s", e)
+            return False
+
+    async def stop_thinking_bed(self, guild_id: int) -> None:
+        """Drop the thinking pad; stop mixer playback if no speech is in flight."""
+        mixer = (getattr(self, "_voice_mixers", None) or {}).get(guild_id)
+        vc = self._voice_clients.get(guild_id)
+        if mixer is not None:
+            try:
+                mixer.set_ambient(None)
+                wait_start = time.monotonic()
+                while mixer.speech_active and time.monotonic() - wait_start < 8.0:
+                    await asyncio.sleep(0.05)
+            except Exception:
+                pass
+        if mixer is not None and mixer.speech_active:
+            return
+        if vc is not None and getattr(vc, "is_playing", lambda: False)():
+            try:
+                vc.stop()
+            except Exception:
+                pass
+        (getattr(self, "_voice_mixers", None) or {}).pop(guild_id, None)
+        logger.info("Thinking bed off (guild=%d)", guild_id)
+
     async def join_voice_channel(self, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
         """Join a voice channel; returns True on success. ``text_channel_id`` stores the
         transcription-routing binding so programmatic joins work without ``/voice join``."""
@@ -3395,12 +3449,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 )
             except Exception as e:
                 logger.warning("Voice receiver failed to start: %s", e)
-            # Mixer is best-effort; failure falls back to one-shot FFmpegPCMAudio playback.
-            if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
-                try:
-                    await self._install_voice_mixer(guild_id, vc)
-                except Exception as e:
-                    logger.warning("Voice mixer failed to start: %s", e)
+            # Mixer starts on thinking/TTS only — idle play lights Discord's speaking ring.
             return True
 
     async def leave_voice_channel(self, guild_id: int) -> None:
@@ -3447,6 +3496,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             playback_timeout = await self._playback_timeout_for_audio(audio_path)
             # ── Mixer path (overlap + ducking) ──────────────────────────────
             mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
+            if mixer is None and getattr(self, "_voice_fx_cfg", {}).get("enabled"):
+                try:
+                    await self._install_voice_mixer(guild_id, vc)
+                    mixer = (getattr(self, "_voice_mixers", None) or {}).get(guild_id)
+                except Exception as e:
+                    logger.warning("Voice mixer failed to start for playback: %s", e)
             if mixer is not None:
                 decode_to_pcm = _voice_mixer_module().decode_to_pcm
                 pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
@@ -3461,6 +3516,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             mixer.stop_speech()
                             break
                         await asyncio.sleep(0.05)
+                    # Mixer.read() never returns empty (silence frames) — Discord keeps the
+                    # speaking ring lit. Tear the mixer down once speech is done.
+                    await self.stop_thinking_bed(guild_id)
                     return True
                 logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
             # Legacy one-shot path: pause receiver while playing (echo prevention).
@@ -3575,6 +3633,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         vc = self._voice_clients.get(guild_id)
         return vc is not None and vc.is_connected()
 
+    def connected_voice_guild_id(self) -> Optional[int]:
+        """Guild id of the live VC connection, if any (one client per guild)."""
+        for gid in list(getattr(self, "_voice_clients", {}) or {}):
+            if self.is_in_voice_channel(gid):
+                return gid
+        return None
+
     def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
         """Return voice channel info (name, members, count, speaking user IDs) or None if not connected."""
         vc = self._voice_clients.get(guild_id)
@@ -3667,7 +3732,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if not result.get("success"):
                 return
             transcript = result.get("transcript", "").strip()
+            rms = 0.0
+            try:
+                import array as _array
+                samples = _array.array("h")
+                samples.frombytes(pcm_data[: len(pcm_data) // 2 * 2])
+                if samples:
+                    rms = (sum(int(s) * int(s) for s in samples) / len(samples)) ** 0.5
+            except Exception:
+                pass
             if not transcript or is_whisper_hallucination(transcript):
+                logger.info(
+                    "Voice STT empty/hallucination user=%s pcm=%dB rms=%.1f duration=%.2fs transcript=%r",
+                    user_id, len(pcm_data), rms,
+                    len(pcm_data) / (VoiceReceiver.SAMPLE_RATE * VoiceReceiver.CHANNELS * 2),
+                    transcript[:80],
+                )
                 return
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
             if self._voice_input_callback:
