@@ -41,7 +41,19 @@ describe('restoring a pending connection from a resume snapshot', () => {
     const state = restorePendingConnectionFromSnapshot({ pending_connection: SNAPSHOT }, SESSION_ID, Date.now() / 1000)
 
     expect($connectionRequests.get()[SESSION_ID]).toBe(settled)
-    expect(state.request).toBe(settled)
+    // A refused snapshot is no pending card: the caller must not flag the session as needing
+    // input behind a summary that has no controls.
+    expect(state.request).toBeNull()
+  })
+
+  it('a settled card for one operation does not hide the next operation the session opened', () => {
+    setConnectionRequest(cached({ opId: 'op-0', settled: true, settledBy: 'all_resolved' }))
+
+    const state = restorePendingConnectionFromSnapshot({ pending_connection: SNAPSHOT }, SESSION_ID, Date.now() / 1000)
+
+    expect(state.request?.opId).toBe('op-1')
+    expect($connectionRequests.get()[SESSION_ID].opId).toBe('op-1')
+    expect($connectionRequests.get()[SESSION_ID].settled).toBe(false)
   })
 
   it('never regresses a row a newer frame already moved', () => {
@@ -55,10 +67,11 @@ describe('restoring a pending connection from a resume snapshot', () => {
 
     setConnectionRequest(live)
 
-    restorePendingConnectionFromSnapshot({ pending_connection: SNAPSHOT }, SESSION_ID, Date.now() / 1000)
+    const state = restorePendingConnectionFromSnapshot({ pending_connection: SNAPSHOT }, SESSION_ID, Date.now() / 1000)
 
     expect($connectionRequests.get()[SESSION_ID]).toBe(live)
     expect($connectionRequests.get()[SESSION_ID].targets[0].state).toBe('connected')
+    expect(state.request).toBeNull()
   })
 
   it('takes the snapshot when it is the newer word on the operation', () => {

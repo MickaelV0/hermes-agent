@@ -86,7 +86,9 @@ export function useConnectionOwner(sessionId: null | string, active: boolean): C
 /** The browser leg of a connection came back through `hermes://connections/done`. Show the session
  *  that opened the operation and tell its backend to read the account now instead of at its next
  *  tick. Nothing in the link is trusted to move a row: the op id only names which card to show, and
- *  the backend reads the account itself. An operation this window holds no card for is ignored. */
+ *  the backend reads the account itself. An operation this window holds no card for, or one that
+ *  already settled, is ignored: the tab can come back long after Continue, and a stale link must
+ *  not pull the user away from where they are. */
 export async function openConnectionDoneLink(
   op: string,
   navigate: (to: string) => void,
@@ -94,7 +96,7 @@ export async function openConnectionDoneLink(
 ): Promise<void> {
   const request = Object.values($connectionRequests.get()).find(entry => entry.opId === op)
 
-  if (!request?.sessionId) {
+  if (!request?.sessionId || request.settled) {
     return
   }
 
@@ -107,10 +109,15 @@ export async function openConnectionDoneLink(
     return
   }
 
-  await requestGatewayForAgent(owner.connectionId, owner.profile, 'connectors.operation.wake', {
-    op_id: op,
-    session_id: request.sessionId
-  })
+  try {
+    await requestGatewayForAgent(owner.connectionId, owner.profile, 'connectors.operation.wake', {
+      op_id: op,
+      session_id: request.sessionId
+    })
+  } catch {
+    // The wake only shortens the wait. The operation can settle and leave the live registry between
+    // the link and this RPC (4004); the watcher reads the account at its next tick regardless.
+  }
 }
 
 /** Try again for one target of the open operation: one RPC, and the fresh link when the backend
@@ -223,28 +230,26 @@ export const CONNECTOR_CARD_PHASES = {
   unavailable: { mark: 'idle', resolved: true, settled: notConnected, verb: 'none' }
 } satisfies Record<ConnectionTargetState, ConnectorCardPhase>
 
-/** Where the keyboard goes when a row moves. */
-export interface ConnectorFocusHandoff {
-  cardRef: RefObject<HTMLDivElement | null>
-  continueRef: RefObject<HTMLButtonElement | null>
-}
+// A disabled verb (a working row, a waiting row with no link yet) refuses focus, and the keyboard
+// would land on the document body; so the first control that can take it, else the row itself.
+const FOCUSABLE_IN_ROW = 'button:not([disabled]), [href], input:not([disabled])'
+// The user is typing a credential; a row moving elsewhere on the card must not take the keyboard.
+const EDITABLE = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
 
 function focusChangedRow(card: HTMLElement, name: string): void {
   const row = [...card.querySelectorAll<HTMLElement>('[data-connector-row]')].find(
     node => node.dataset.connectorRow === name
   )
 
-  // The verb when the row still has one, else the row: a keyboard user whose control just
-  // disappeared would otherwise be dropped back to the document.
-  ;(row?.querySelector('button') ?? row)?.focus()
+  ;(row?.querySelector<HTMLElement>(FOCUSABLE_IN_ROW) ?? row)?.focus()
 }
 
-/** Move focus to what the backend changed: the row that moved, or Continue once every row resolved.
- *  Only while the card already holds focus — a transition the user is not looking at must not take
+/** Move focus to the row the backend changed. Only while the card already holds focus, and never
+ *  out of a field the user is typing in — a transition the user is not looking at must not take
  *  the keyboard away from wherever they are. */
 export function useConnectorFocusHandoff(
   targets: readonly ConnectionTarget[],
-  { cardRef, continueRef }: ConnectorFocusHandoff
+  cardRef: RefObject<HTMLDivElement | null>
 ): void {
   const seen = useRef<Map<string, ConnectionTargetState> | null>(null)
   const states = targets.map(target => `${target.name}=${target.state}`).join('|')
@@ -264,13 +269,9 @@ export function useConnectorFocusHandoff(
       return before !== undefined && before !== target.state
     })
 
-    if (!previous || !moved || !card?.contains(document.activeElement)) {
-      return
-    }
+    const active = document.activeElement
 
-    if (targets.every(target => CONNECTOR_CARD_PHASES[target.state].resolved) && continueRef.current) {
-      continueRef.current.focus()
-
+    if (!previous || !moved || !card?.contains(active) || active?.matches(EDITABLE)) {
       return
     }
 
@@ -296,11 +297,10 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   const copy = t.connectors
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
   const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
-  // DOM handles for the focus handoff, never rendered state.
+  // A DOM handle for the focus handoff, never rendered state.
   const cardRef = useRef<HTMLDivElement | null>(null)
-  const continueRef = useRef<HTMLButtonElement | null>(null)
 
-  useConnectorFocusHandoff(request.targets, { cardRef, continueRef })
+  useConnectorFocusHandoff(request.targets, cardRef)
 
   // The fresh link opens at once, and the update frame then paints the row as waiting. A refused
   // re-mint is a click that changed nothing, so it gets a toast; the row stays as it was.
@@ -385,12 +385,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
       </ConnectorCard>
       {unresolved ? (
         <div className="px-3.5">
-          <Button
-            onClick={() => void continueConnectionRequest(request)}
-            ref={continueRef}
-            size="xs"
-            variant="textStrong"
-          >
+          <Button onClick={() => void continueConnectionRequest(request)} size="xs" variant="textStrong">
             {t.common.continue}
           </Button>
         </div>

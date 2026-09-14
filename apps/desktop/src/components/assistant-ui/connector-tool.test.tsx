@@ -266,6 +266,36 @@ describe('ConnectorTool operation card', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
+  it('a deep link for an operation that already settled moves nothing', async () => {
+    const request = vi.fn()
+    // SAFETY: the wake calls only `request` on the primary socket; nothing else on the client is touched.
+    setPrimaryGateway({ request } as never)
+    setSessionOwnerHint(STORED_ID, { connectionId: '', profile: 'default' })
+    setConnectionRequest({ ...REQUEST, settled: true, settledBy: 'continue' })
+    const navigate = vi.fn()
+
+    // The browser tab can come back long after Continue: a stale link must not pull the user away.
+    await openConnectionDoneLink('operation-1', navigate, () => STORED_ID)
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('a refused wake is not an error: the watcher still ticks', async () => {
+    // 4004 once the operation settled and left the live registry between the link and the RPC.
+    const request = vi.fn().mockRejectedValue(new Error('4004'))
+    // SAFETY: the wake calls only `request` on the primary socket; nothing else on the client is touched.
+    setPrimaryGateway({ request } as never)
+    setSessionOwnerHint(STORED_ID, { connectionId: '', profile: 'default' })
+    setConnectionRequest(REQUEST)
+    const navigate = vi.fn()
+
+    await expect(openConnectionDoneLink('operation-1', navigate, () => STORED_ID)).resolves.toBeUndefined()
+
+    expect(navigate).toHaveBeenCalledWith(sessionRoute(STORED_ID))
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
   it('hands the keyboard to the row the backend moved, and only while the card holds focus', async () => {
     const offer = (gmail: ConnectionTarget['state'], notion: ConnectionTarget['state']) => (
       <I18nProvider configClient={null} initialLocale="en">

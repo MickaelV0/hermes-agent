@@ -246,6 +246,113 @@ describe('the MCP setup card', () => {
     expect(request).toHaveBeenCalledTimes(1)
   })
 
+  it('leaves the keyboard in a credential field while another row moves', async () => {
+    const offer = (postgres: ConnectionTarget['state']) => (
+      <I18nProvider configClient={null} initialLocale="en">
+        <McpSetupOffer
+          action="install"
+          owner={PRIMARY_OWNER}
+          request={{
+            ...REQUEST,
+            targets: [
+              { ...LINEAR, requiredEnv: [{ name: 'LINEAR_API_KEY', prompt: 'Linear API key', required: true }] },
+              { ...LINEAR, name: 'postgres', state: postgres }
+            ]
+          }}
+        />
+      </I18nProvider>
+    )
+
+    const { rerender } = render(offer('initiated'))
+    const field = screen.getByLabelText(/Linear API key/)
+    field.focus()
+    expect(window.document.activeElement).toBe(field)
+
+    rerender(offer('connected'))
+
+    // The user is typing a secret; a row moving elsewhere on the card must not take the keyboard.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(window.document.activeElement).toBe(field)
+  })
+
+  it('hands the keyboard to the row itself when its new verb cannot take focus', async () => {
+    const offer = (linear: ConnectionTarget['state']) => (
+      <I18nProvider configClient={null} initialLocale="en">
+        <McpSetupOffer
+          action="install"
+          owner={PRIMARY_OWNER}
+          request={{ ...REQUEST, targets: [{ ...LINEAR, state: linear }, { ...LINEAR, name: 'postgres' }] }}
+        />
+      </I18nProvider>
+    )
+
+    const { rerender } = render(offer('pending'))
+    screen.getAllByRole('button', { name: 'Install' })[1].focus()
+
+    // pending -> initiated paints a working verb, which is disabled: focus must land on the row,
+    // not fall through to the document body.
+    rerender(offer('initiated'))
+
+    const linearRow = window.document.querySelector<HTMLElement>('[data-connector-row="linear"]')
+
+    await waitFor(() => {
+      expect(window.document.activeElement).toBe(linearRow)
+    })
+  })
+
+  it('gives Install back when the store refuses to send the consent', async () => {
+    const request = vi.fn().mockResolvedValue({ status: 'ok' })
+    // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
+    $gateway.set({ request } as never)
+    // No request in the store: the operation was cleared under the card, so the send is refused
+    // (resolves false) rather than failing. The verb must not spin forever on a click that sent nothing.
+
+    renderOffer()
+    const install = screen.getAllByRole('button', { name: 'Install' })[0]
+    fireEvent.click(install)
+
+    await waitFor(() => {
+      expect(install.hasAttribute('disabled')).toBe(false)
+    })
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('gives Install back when the next frame leaves the row where it was', async () => {
+    const request = vi.fn().mockResolvedValue({ status: 'ok' })
+    // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
+    $gateway.set({ request } as never)
+    setConnectionRequest(REQUEST)
+
+    const field = { name: 'LINEAR_API_KEY', prompt: 'Linear API key', required: false }
+
+    const offer = (seq: number, detail: string) => (
+      <I18nProvider configClient={null} initialLocale="en">
+        <McpSetupOffer
+          action="install"
+          owner={PRIMARY_OWNER}
+          request={{ ...REQUEST, seq, targets: [{ ...LINEAR, detail, requiredEnv: [field] }] }}
+        />
+      </I18nProvider>
+    )
+
+    const { rerender } = render(offer(0, ''))
+    const install = screen.getByRole('button', { name: 'Install' })
+    fireEvent.click(install)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(1)
+    })
+    expect(install.hasAttribute('disabled')).toBe(true)
+
+    // A partial approval: the backend answers with a same-state frame whose detail names what is
+    // still missing. That frame is the backend's word on the click, so the verb comes back.
+    rerender(offer(1, 'Missing LINEAR_API_KEY'))
+
+    await waitFor(() => {
+      expect(install.hasAttribute('disabled')).toBe(false)
+    })
+  })
+
   it('offers nothing to approve on an authorize row: the backend is still minting the link', () => {
     renderOffer({ ...REQUEST, targets: [{ ...LINEAR, action: 'authorize', state: 'pending' }] }, 'authorize')
 

@@ -214,11 +214,10 @@ export function McpSetupOffer({ action, owner, request }: McpSetupOfferProps) {
     tools: target.tools.length
   }))
 
-  // DOM handles for the focus handoff, never rendered state.
+  // A DOM handle for the focus handoff, never rendered state.
   const cardRef = useRef<HTMLDivElement | null>(null)
-  const continueRef = useRef<HTMLButtonElement | null>(null)
 
-  useConnectorFocusHandoff(request.targets, { cardRef, continueRef })
+  useConnectorFocusHandoff(request.targets, cardRef)
 
   // Try again is one RPC on the open operation. An authorize target comes back with a fresh link,
   // which opens at once; install and enable simply run again and report through connection.update.
@@ -268,12 +267,7 @@ export function McpSetupOffer({ action, owner, request }: McpSetupOfferProps) {
       </ConnectorCard>
       {unresolved ? (
         <div className="px-3.5">
-          <Button
-            onClick={() => void continueConnectionRequest(request)}
-            ref={continueRef}
-            size="xs"
-            variant="textStrong"
-          >
+          <Button onClick={() => void continueConnectionRequest(request)} size="xs" variant="textStrong">
             {t.common.continue}
           </Button>
         </div>
@@ -296,7 +290,8 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
   const { t } = useI18n()
   const copy = t.assistant.mcpSetup
   const [envDraft, setEnvDraft] = useState<Record<string, string>>({})
-  const [sending, setSending] = useState(false)
+  // The operation's seq when the consent was sent; null when nothing is in flight.
+  const [sentAtSeq, setSentAtSeq] = useState<null | number>(null)
   const server = target.name
   const phase = CONNECTOR_CARD_PHASES[target.state]
   const verb = rowVerb(target, action)
@@ -310,18 +305,27 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
     }
   }, [target.state])
 
-  // The verb stays held until the backend moves the row, not until the RPC returns: a second click
-  // in that window would send the consent twice.
+  // The verb stays held until the backend answers with a frame, not until the RPC returns: a second
+  // click in that window would send the consent twice. The answer is any frame past the seq the
+  // click saw: usually the row moves, but a partial approval (a required credential missing) leaves
+  // the row where it was with a new detail, and the verb must come back for the retry. A send the
+  // store refused (the operation is gone or settled under the card) sent nothing, so nothing is held.
+  const sending = sentAtSeq !== null && request.seq <= sentAtSeq
+
   const approve = async () => {
-    setSending(true)
+    setSentAtSeq(request.seq)
 
     try {
-      await respondToConnectionRequest(request, {
+      const sent = await respondToConnectionRequest(request, {
         targets: [{ env: fields.length > 0 ? envDraft : undefined, name: server, status: 'approved' }]
       })
+
+      if (!sent) {
+        setSentAtSeq(null)
+      }
     } catch (error) {
       notifyError(error, copy.sendFailed)
-      setSending(false)
+      setSentAtSeq(null)
     }
   }
 
