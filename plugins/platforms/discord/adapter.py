@@ -3158,13 +3158,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
-        """Play auto-TTS in a joined VC (any originating text chat), else as a file attachment."""
+        """Play auto-TTS only in a joined VC. Never attach a voice bubble in text."""
         gid = self.connected_voice_guild_id()
         if gid is not None:
             logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
             success = await self.play_in_voice_channel(gid, audio_path)
             return SendResult(success=success)
-        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+        logger.info("[%s] Skipping TTS: not in a voice channel", self.name)
+        return SendResult(success=True)
 
 
     # --- Voice channel methods (join / leave / play) ---

@@ -1842,11 +1842,11 @@ class TestVoiceTTSPlayback:
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=False) is False
 
-    def test_text_input_voice_all_runner_fires(self):
-        """Streaming OFF + text input + voice_mode=all: runner generates TTS."""
+    def test_text_input_voice_all_runner_skips_without_vc(self):
+        """Discord text + voice_mode=all but not in VC: no TTS / no voice bubble."""
         from gateway.platforms.event import MessageType
         runner = self._make_runner()
-        assert self._call_should_reply(runner, "all", MessageType.TEXT, already_sent=False) is True
+        assert self._call_should_reply(runner, "all", MessageType.TEXT, already_sent=False) is False
 
 
     def test_error_response_no_tts(self):

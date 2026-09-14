@@ -240,9 +240,17 @@ class GatewayVoiceMixin:
             await adapter.leave_voice_channel(guild_id)
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
-        # Always clean up state even if leave raised an exception
-        self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "off")
+        # Always clean up state even if leave raised an exception. Join stamps
+        # mode=all on the *bound* text channel, which may not be where leave was typed.
+        profile = getattr(adapter, "_owner_profile", None)
+        chat_ids = {str(event.source.chat_id)}
+        vtc = getattr(adapter, "_voice_text_channels", None)
+        if isinstance(vtc, dict) and vtc.get(guild_id) is not None:
+            chat_ids.add(str(vtc.get(guild_id)))
+        for cid in chat_ids:
+            self._apply_voice_mode(
+                adapter,
+                self._voice_key(event.source.platform, cid, profile=profile), cid, "off")
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return "Left voice channel."
@@ -361,6 +369,11 @@ class GatewayVoiceMixin:
             if callable(getter):
                 with suppress(Exception):
                     joined_vc = getter() is not None
+            # Discord: generate/send TTS only while actually in a VC. `/voice join`
+            # persists mode=all on the text channel; leave from another salon used
+            # to leave that flag on and drop voice bubbles in #home.
+            if not joined_vc:
+                return False
         # ``voice.auto_tts`` (synced into the adapter at startup) is the fallback only when the
         # chat has no explicit mode; the chat-level all/voice_only/off choice takes precedence.
         if not (voice_mode == "all" or (voice_mode == "voice_only" and is_voice_input)
@@ -433,10 +446,11 @@ class GatewayVoiceMixin:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._adapter_for_source(event.source)
         guild_id = None
-        getter = getattr(adapter, "connected_voice_guild_id", None)
-        if callable(getter):
-            with suppress(Exception):
-                guild_id = getter()
+        if event.source.platform == Platform.DISCORD:
+            getter = getattr(adapter, "connected_voice_guild_id", None)
+            if callable(getter):
+                with suppress(Exception):
+                    guild_id = getter()
         if guild_id is None:
             guild_id = self._get_guild_id(event)
         play = getattr(adapter, "play_in_voice_channel", None)
@@ -444,6 +458,8 @@ class GatewayVoiceMixin:
         if guild_id and callable(play) and callable(is_in_vc) and is_in_vc(guild_id):
             for path in audio_paths:
                 await play(guild_id, path)
+            return
+        if event.source.platform == Platform.DISCORD:
             return
         if not callable(send_voice := getattr(adapter, "send_voice", None)):
             return
