@@ -36,7 +36,10 @@ class Target:
     # `reconnect force` on a connected account: the list reports the OLD account `active` until the user
     # signs in again, so `connected` is not believed until the row has read as anything else once.
     awaiting_new_attempt: bool = False
-    # Renderer-reported fields passed through to the model (``tools`` after MCP OAuth).
+    # The credentials an MCP install still needs ({name, prompt, required}); the card draws a
+    # field per entry and holds its verb until every required one has text.
+    required_env: List[Dict[str, Any]] = field(default_factory=list)
+    # Fields a transition passes through to the model (``tools`` on a connected MCP target).
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -57,6 +60,8 @@ class Target:
             out["icon_url"] = self.icon_url
         if self.attempt:
             out["attempt"] = self.attempt
+        if self.required_env:
+            out["required_env"] = self.required_env
         out.update(self.extra)
         return out
 

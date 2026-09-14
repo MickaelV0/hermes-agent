@@ -125,23 +125,43 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
 
 
 def _reissue(rid, operation, args):
-    """Re-mint links for the named targets on the open operation (user actor)."""
-    from tools.connectors.contract import Actor, TargetState
-    from tools.connectors.gateway.client import ConnectorClient
-    from tools.connectors.managed import mint
+    """The card's Try again on the open operation: a managed target is re-minted at the gateway, an
+    MCP target re-runs its own install / enable / OAuth. Dead rows only — a waiting target already
+    holds the link the card reopens, and never calls here."""
+    from tools.connectors.contract import TargetState
     from tui_gateway.connector_payload import connector_ui_payload
 
-    # Only a dead link is re-minted. A waiting target already holds its link (minted up front);
-    # the card re-opens that one and never calls here for it.
     targets = [operation.target(n) for n in args["connectors"]]
     if any(t is None for t in targets):
         return _connector_rpc_error(rid, 4004, "UNKNOWN_TARGET", "no such target on the open operation")
+    if len({t.kind for t in targets}) != 1:
+        return _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "one target kind per request")
     stale = [t.name for t in targets if t.state in (TargetState.failed, TargetState.expired)]
     if len(stale) != len(targets):
         return _connector_rpc_error(rid, 4002, "LINK_STILL_VALID",
-                                    "only a failed or expired target can be re-minted; reopen the stored link")
-    mint(ConnectorClient(), operation, stale, reinitiate=True, actor=Actor.user)
+                                    "only a failed or expired target can be re-run; reopen the stored link")
+    error = _REISSUE_BY_KIND[targets[0].kind](operation, stale)
+    if error:
+        return _connector_rpc_error(rid, 4002, "REISSUE_REFUSED", error)
     return _ok(rid, connector_ui_payload(_operation_view(operation)))
+
+
+def _remint_managed(operation, names):
+    from tools.connectors.contract import Actor
+    from tools.connectors.gateway.client import ConnectorClient
+    from tools.connectors.managed import mint
+
+    mint(ConnectorClient(), operation, names, reinitiate=True, actor=Actor.user)
+    return None
+
+
+def _rerun_mcp(operation, names):
+    from tools.connectors.mcp import retry
+
+    return retry(operation, names)
+
+
+_REISSUE_BY_KIND = {"connector": _remint_managed, "mcp": _rerun_mcp}
 
 
 def _live_operation(rid, params, owner):

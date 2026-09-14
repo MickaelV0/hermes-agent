@@ -250,19 +250,19 @@ def test_cli_connect_returns_urls_without_emitting_a_card(owned_session):
     assert live.current(SID) is None
 
 
-def test_connection_respond_rejects_managed_connected_claims_and_strangers(owned_session):
+def test_connection_respond_ignores_outcome_claims_and_rejects_strangers(owned_session):
     owner, stranger = owned_session
     operation = ConnectionOperation([Target("gmail", "connector", "connect")], session_key=SID)
     live.open(operation)
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
 
-    rejected = _rpc(
+    ignored = _rpc(
         owner,
         "connection.respond",
         op_id=operation.op_id,
         result={"targets": [{"name": "gmail", "status": "connected"}]},
     )
-    assert rejected["error"]["code"] == 4002
+    assert "result" in ignored, ignored
     assert operation.target("gmail").state == TargetState.initiated
 
     foreign = _rpc(

@@ -16,7 +16,7 @@ from contextlib import ExitStack, suppress
 
 import pytest
 
-from tools.connectors import live
+from tools.connectors import live, mcp
 from tools.connectors.contract import Actor, TargetState
 from tools.connectors.operation import ConnectionOperation, Target
 from tui_gateway import server
@@ -75,6 +75,19 @@ def _rpc(client, method, **params):
                            client.transport)
 
 
+def _connect_rpc(client, **params):
+    """``connectors.connect`` runs on the long-handler pool and writes its reply to the transport."""
+    before = len(client.frames)
+    _rpc(client, "connectors.connect", **params)
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        replies = [f for f in list(client.frames)[before:] if f.get("id") == 7]
+        if replies:
+            return replies[-1]
+        time.sleep(0.01)
+    raise AssertionError("no reply")
+
+
 def _open_op():
     operation = ConnectionOperation([Target("gmail", "connector", "connect"), Target("notion", "connector", "connect")],
                                     session_key=SID)
@@ -124,14 +137,17 @@ def test_respond_drives_the_live_operation_and_emits_update(owned):
     assert updates[-1]["payload"]["op_id"] == operation.op_id
 
 
-def test_respond_cannot_claim_connected_for_a_managed_target(owned):
+def test_respond_cannot_claim_an_outcome_for_any_target(owned):
+    """The card renders the operation; only skip, approve and Continue are its to say."""
     owner, _, _ = owned
     operation = _open_op()
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
     reply = _rpc(owner, "connection.respond", op_id=operation.op_id,
-                 result=json.dumps({"targets": [{"name": "gmail", "status": "connected"}]}))
-    assert reply["error"]["code"] == 4002
+                 result=json.dumps({"targets": [{"name": "gmail", "status": "connected"},
+                                                {"name": "notion", "status": "failed"}]}))
+    assert "result" in reply, reply
     assert operation.target("gmail").state == TargetState.initiated
+    assert operation.target("notion").state == TargetState.pending
 
 
 def test_respond_continue_settles_and_emits_the_settlement_update(owned):
@@ -179,23 +195,11 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
     monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
     monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
 
-    def long_rpc(**params):
-        # connectors.connect runs on the pool and writes its reply to the transport.
-        before = len(owner.frames)
-        _rpc(owner, "connectors.connect", **params)
-        deadline = time.time() + 2
-        while time.time() < deadline:
-            replies = [f for f in list(owner.frames)[before:] if f.get("id") == 7]
-            if replies:
-                return replies[-1]
-            time.sleep(0.01)
-        raise AssertionError("no reply")
-
-    refused = long_rpc(connectors=["gmail"])
+    refused = _connect_rpc(owner, connectors=["gmail"])
     assert refused["error"]["code"] == 4002 and mints == []
     assert operation.target("gmail").connect_url == "https://l/gmail/1"
 
-    reply = long_rpc(connectors=["notion"])
+    reply = _connect_rpc(owner, connectors=["notion"])
     assert "result" in reply, reply
     assert mints == [(("notion",), True)]
     assert operation.target("notion").state == TargetState.initiated
@@ -229,3 +233,49 @@ def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch,
     assert target.connect_url is None
     assert target.detail == "vendor: still no"
 
+
+
+class FakeOAuthAttempt:
+    def __init__(self, auth_url):
+        self.auth_url = auth_url
+
+    def poll(self):
+        return {"status": "pending", "error": "", "tools": []}
+
+
+class FakeMcpBackend:
+    """The MCP work behind an authorize target; the managed gateway has no part in it."""
+
+    def __init__(self):
+        self.starts = []
+
+    def start_oauth(self, name):
+        self.starts.append(name)
+        return FakeOAuthAttempt(f"https://auth.example/{name}/{len(self.starts)}")
+
+
+def test_try_again_on_an_mcp_target_re_runs_its_flow_and_never_calls_the_managed_gateway(owned, monkeypatch):
+    owner, _, _ = owned
+    operation = ConnectionOperation([Target("linear", "mcp", "authorize")], session_key=SID)
+    live.open(operation)
+    backend = FakeMcpBackend()
+    runner = mcp.open_runner("authorize", backend)
+    runner.prepare(operation)  # the first flow: the row waits on the link it minted
+    operation.transition("linear", TargetState.failed, Actor.backend_watcher, detail="the provider timed out")
+
+    class Forbidden:
+        def __init__(self):
+            raise AssertionError("an MCP target must never reach the managed gateway")
+
+    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Forbidden)
+    monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
+    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+
+    reply = _connect_rpc(owner, connectors=["linear"], reconnect=True)
+    assert "result" in reply, reply
+    assert backend.starts == ["linear", "linear"]
+    target = operation.target("linear")
+    assert target.state == TargetState.initiated
+    assert target.connect_url == "https://auth.example/linear/2"
+    assert target.detail == ""
+    runner.close()

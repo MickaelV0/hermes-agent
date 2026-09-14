@@ -1,11 +1,18 @@
-"""MCP targets of ``manage_connections``: the renderer runs install / enable / OAuth and answers
-through ``connection.respond``; nothing else observes an MCP flow today (PR3 moves OAuth
-observation server-side). Calls without an approval callback settle unavailable."""
+"""MCP targets of ``manage_connections``: the backend installs, enables and authorizes; the card is
+a projection of the operation and may only say approved, skipped or continue.
+
+An MCP target runs the same ``run.py`` lifecycle a managed connector runs. ``prepare`` starts an
+OAuth flow, or records the credentials an install still needs; the card's approval starts the
+install or the enable; ``observe`` reads the outcome on every tick. Off the desktop there is no
+card, so every action runs at once and the result carries the authorization URL for the user.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from tools.connectors.contract import Actor, SettleReason, TargetState
@@ -16,20 +23,16 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# The renderer's answer vocabulary → target state. A failed approval stays open; a decline resolves.
-_OUTCOME_STATES = {
-    "installed": TargetState.connected, "enabled": TargetState.connected, "authorized": TargetState.connected,
-    "connected": TargetState.connected,
-    "declined": TargetState.skipped, "skipped": TargetState.skipped,
-    "error": TargetState.failed, "failed": TargetState.failed,
-}
-
-UNAVAILABLE_HINT = "hermes mcp install {name} / hermes mcp login {name}"
-
 NOTE = (
     "Settled once; do not re-ask for any target the user skipped or that timed out — continue "
     "without it or ask in chat. Tools of a newly installed or authorized server become available "
     "on your next turn."
+)
+
+OFF_DESKTOP_NOTE = (
+    "There is no approval card in this session. Show any connect_url to the user so they open it "
+    "in a browser, ask them to say when they are done, then check with action 'status'. A failed "
+    "target's detail says what the user must do; do not retry it on your own."
 )
 
 
@@ -68,44 +71,333 @@ def validate_mcp_names(action: str, names: List[str]) -> Optional[str]:
     )
 
 
+# ---------------------------------------------------------------------------
+# the backend: the catalog, the installer, the OAuth flow
+# ---------------------------------------------------------------------------
+
+
+def _catalog_entry(name: str):
+    from hermes_cli.mcp_catalog import get_entry
+
+    entry = get_entry(name)
+    if entry is None:
+        raise ValueError(f"no catalog entry '{name}'")
+    return entry
+
+
+class _CatalogBackend:
+    """The real work behind an MCP target. One object so a caller can pass another one in."""
+
+    def required_env(self, name: str) -> List[Dict[str, Any]]:
+        """The credentials the catalog entry declares that have no value yet."""
+        from hermes_cli.config import get_env_value
+
+        return [{"name": spec.name, "prompt": spec.prompt, "required": spec.required}
+                for spec in (_catalog_entry(name).auth.env or []) if not get_env_value(spec.name)]
+
+    def start_oauth(self, name: str) -> Any:
+        from tools.connectors import mcp_oauth
+
+        return mcp_oauth.start(name)
+
+    def install(self, name: str, env: Dict[str, str]) -> List[str]:
+        """Write the declared credentials, install the entry, report the tools it offers."""
+        from hermes_cli.config import save_env_value, validate_env_var_name_for_write
+        from hermes_cli.mcp_catalog import install_entry
+
+        entry = _catalog_entry(name)
+        declared = {spec.name for spec in (entry.auth.env or [])}
+        # Validate the whole map before the first write: configuring one MCP is not a general
+        # env-writing primitive, and a mixed valid/invalid answer must persist nothing.
+        for key in env:
+            if key not in declared:
+                raise ValueError(f"'{name}' does not declare the environment variable {key}")
+            validate_env_var_name_for_write(key)
+        for key, value in env.items():
+            if value:
+                save_env_value(key, value)
+        install_entry(entry, enable=True)
+        return _probe_tool_names(name)
+
+    def enable(self, name: str) -> None:
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        servers = config.get("mcp_servers")
+        if not isinstance(servers, dict) or not isinstance(servers.get(name), dict):
+            raise ValueError(f"'{name}' is not a configured MCP server")
+        servers[name]["enabled"] = True
+        save_config(config)
+
+
+def _probe_tool_names(name: str) -> List[str]:
+    from hermes_cli.mcp_catalog import _probe_tools
+
+    return [str(tool[0]) for tool in (_probe_tools(name) or [])]
+
+
+def _default_backend() -> Any:
+    return _CatalogBackend()
+
+
+# ---------------------------------------------------------------------------
+# the runner: per-operation work, reachable from the RPC thread by op_id
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Work:
+    """One target's work in flight: an OAuth attempt the watcher polls, or a worker's outcome."""
+
+    attempt: Any = None
+    done: threading.Event = field(default_factory=threading.Event)
+    tools: List[str] = field(default_factory=list)
+    error: str = ""
+
+
+class _Runner:
+    """The backend plus the work for one operation's targets."""
+
+    def __init__(self, action: str, backend: Any):
+        self.action = action
+        self.backend = backend
+        self.op_id: Optional[str] = None
+        self.work: Dict[str, _Work] = {}
+
+    def run(self, table: Dict[str, Callable], operation: ConnectionOperation, target: Target,
+            env: Optional[Dict[str, str]] = None) -> None:
+        table[self.action](self, operation, target, env or {})
+
+    def spawn(self, operation: ConnectionOperation, target: Target, call: Callable[[], Any]) -> None:
+        """Run one blocking backend call on a worker thread; ``observe`` reports its outcome."""
+        work = _Work()
+        self.work[target.name] = work
+
+        def body() -> None:
+            try:
+                work.tools = [str(name) for name in (call() or [])]
+            except Exception as exc:
+                work.error = _detail(exc)
+            finally:
+                work.done.set()
+                operation.wake.set()
+
+        threading.Thread(target=body, daemon=True, name=f"mcp-{self.action}-{target.name}").start()
+
+    def prepare(self, operation: ConnectionOperation) -> None:
+        _RUNNERS[operation.op_id] = self
+        self.op_id = operation.op_id
+        for target in operation.targets:
+            self.run(_PREPARE, operation, target)
+
+    def observe(self, operation: ConnectionOperation) -> None:
+        for target in operation.targets:
+            # Only a live target can be advanced by a read; a failed one waits for Try again.
+            if operation.settled or target.state not in (TargetState.pending, TargetState.initiated):
+                continue
+            _OBSERVE[self.action](self, operation, target)
+
+    def close(self) -> None:
+        if self.op_id is not None:
+            _RUNNERS.pop(self.op_id, None)
+
+
+# op_id -> the runner driving it, so the card's answer and Try again (RPC thread) find the work.
+_RUNNERS: Dict[str, _Runner] = {}
+
+
+def open_runner(action: str, backend: Any = None) -> _Runner:
+    """The runner for one MCP operation. ``prepare`` binds it to the operation, so the card's
+    answer and its Try again — both of which arrive on another thread — find the same work."""
+    return _Runner(action, backend or _default_backend())
+
+
+def _detail(exc: Exception) -> str:
+    return str(exc) or exc.__class__.__name__
+
+
+def _fail(operation: ConnectionOperation, target: Target, detail: str) -> None:
+    """Report a failure, whatever the row was doing: a repeated failure has no state change to
+    emit, only newer text."""
+    if target.state == TargetState.failed:
+        operation.refresh(target.name, connect_url=None, detail=detail)
+        return
+    target.connect_url = None  # whatever link the row was offering is dead
+    operation.transition(target.name, TargetState.failed, Actor.backend_watcher, detail=detail)
+
+
+def _connect(operation: ConnectionOperation, target: Target, tools: List[str]) -> None:
+    extra = {"tools": tools} if tools else {}
+    operation.transition(target.name, TargetState.connected, Actor.backend_watcher, **extra)
+
+
+def _actor(target: Target) -> Actor:
+    """Try again is the user's move; a first attempt is the backend's."""
+    return Actor.user if target.state == TargetState.failed else Actor.backend_watcher
+
+
+def _start_oauth(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+    actor = _actor(target)
+    try:
+        attempt = runner.backend.start_oauth(target.name)
+    except Exception as exc:
+        _fail(operation, target, _detail(exc))
+        return
+    runner.work[target.name] = _Work(attempt=attempt)
+    operation.transition(target.name, TargetState.initiated, actor,
+                         connect_url=attempt.auth_url, detail="")
+
+
+def _declare_env(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+    """The install row waits pending; the card draws a field per credential it still needs."""
+    try:
+        required = runner.backend.required_env(target.name)
+    except Exception as exc:
+        _fail(operation, target, _detail(exc))
+        return
+    target.required_env = required
+
+
+def _start_install(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+    actor = _actor(target)
+    target.required_env = []  # the credentials are written by the install; the row stops asking
+    operation.transition(target.name, TargetState.initiated, actor, detail="")
+    runner.spawn(operation, target, lambda: runner.backend.install(target.name, env))
+
+
+def _do_enable(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+    actor = _actor(target)
+    operation.transition(target.name, TargetState.initiated, actor, detail="")
+    try:
+        runner.backend.enable(target.name)
+    except Exception as exc:
+        _fail(operation, target, _detail(exc))
+        return
+    _connect(operation, target, [])
+
+
+def _install_now(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+    """Off the desktop nobody can fill a credential in, so a missing one is the answer."""
+    try:
+        missing = [spec["name"] for spec in runner.backend.required_env(target.name) if spec.get("required", True)]
+    except Exception as exc:
+        _fail(operation, target, _detail(exc))
+        return
+    if missing:
+        from hermes_constants import display_hermes_home
+
+        _fail(operation, target, f"set {', '.join(missing)} in the environment or "
+                                 f"{display_hermes_home()}/.env, then install again")
+        return
+    actor = _actor(target)
+    operation.transition(target.name, TargetState.initiated, actor)
+    try:
+        tools = [str(name) for name in (runner.backend.install(target.name, {}) or [])]
+    except Exception as exc:
+        _fail(operation, target, _detail(exc))
+        return
+    _connect(operation, target, tools)
+
+
+def _observe_oauth(runner: _Runner, operation: ConnectionOperation, target: Target) -> None:
+    work = runner.work.get(target.name)
+    if work is None or work.attempt is None:
+        return
+    snapshot = work.attempt.poll()
+    status = snapshot.get("status")
+    if status not in ("approved", "error"):
+        return
+    runner.work.pop(target.name, None)
+    if status == "approved":
+        _connect(operation, target, list(snapshot.get("tools") or []))
+        return
+    _fail(operation, target, snapshot.get("error") or "the authorization flow failed")
+
+
+def _observe_worker(runner: _Runner, operation: ConnectionOperation, target: Target) -> None:
+    work = runner.work.get(target.name)
+    if work is None or not work.done.is_set():
+        return
+    runner.work.pop(target.name, None)
+    if work.error:
+        _fail(operation, target, work.error)
+        return
+    _connect(operation, target, work.tools)
+
+
+def _nothing(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+    """Authorize needs no approval: the row's verb opens the link the flow already minted."""
+
+
+_PREPARE = {"authorize": _start_oauth, "install": _declare_env, "enable": _nothing}
+_APPROVE = {"authorize": _nothing, "install": _start_install, "enable": _do_enable}
+_RETRY = {"authorize": _start_oauth, "install": _start_install, "enable": _do_enable}
+_OBSERVE = {"authorize": _observe_oauth, "install": _observe_worker, "enable": _observe_worker}
+_OFF_DESKTOP = {"authorize": _start_oauth, "install": _install_now, "enable": _do_enable}
+
+
+# ---------------------------------------------------------------------------
+# the card's answer and its Try again
+# ---------------------------------------------------------------------------
+
+
+def _answer_env(entry: Dict[str, Any]) -> Dict[str, str]:
+    raw = entry.get("env")
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+
 def apply_answer(operation: ConnectionOperation, raw: str) -> None:
-    """Fold the card's ``connection.respond`` payload into the operation. Settlement is derived
-    from target states afterwards, never from the card's own ``settled_by`` claim."""
+    """Fold the card's ``connection.respond`` payload into the operation: a skip, an approval that
+    starts the backend's work, and Continue. The card never reports an outcome, so any other claim
+    moves nothing."""
     try:
         answer = json.loads(raw)
     except (TypeError, ValueError):
         answer = {}
     if not isinstance(answer, dict):
         answer = {}
+    runner = _RUNNERS.get(operation.op_id)
     for entry in answer.get("targets") or ():
         if not isinstance(entry, dict):
             continue
-        name = str(entry.get("name") or "").strip().lower()
-        state = _OUTCOME_STATES.get(str(entry.get("state") or entry.get("status") or "").lower())
-        target = operation.target(name)
-        if target is None or state is None:
+        target = operation.target(str(entry.get("name") or "").strip().lower())
+        if target is None:
             continue
-        actor = Actor.user if state == TargetState.skipped else Actor.renderer_flow
-        extra = {k: v for k, v in entry.items() if k in ("tools",)}
-        if target.state == TargetState.pending and state != TargetState.skipped:
-            operation.transition(name, TargetState.initiated, Actor.renderer_flow)
-        operation.transition(name, state, actor, detail=str(entry.get("detail") or ""), **extra)
+        status = str(entry.get("status") or "").lower()
+        if status == "skipped":
+            operation.transition(target.name, TargetState.skipped, Actor.user)
+        elif status == "approved" and runner is not None and target.state == TargetState.pending:
+            runner.run(_APPROVE, operation, target, _answer_env(entry))
     if answer.get("settled_by") == SettleReason.continue_.value and not operation.all_resolved:
         operation.settle(SettleReason.continue_)
 
 
-def _unavailable(operation: ConnectionOperation) -> str:
+def retry(operation: ConnectionOperation, names: List[str]) -> Optional[str]:
+    """Re-run the named MCP targets on the open operation (the card's Try again): a fresh OAuth
+    flow, a fresh install, a fresh enable. Returns an error message when the operation is not one
+    this module is running."""
+    runner = _RUNNERS.get(operation.op_id)
+    if runner is None:
+        return "this operation has no MCP work to re-run"
+    for name in names:
+        target = operation.target(name)
+        if target is not None:
+            runner.run(_RETRY, operation, target)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# the tool entry point
+# ---------------------------------------------------------------------------
+
+
+def _off_desktop_result(runner: _Runner, names: List[str], action: str, session_key: str) -> str:
+    operation = ConnectionOperation([Target(n, "mcp", action) for n in names], session_key=session_key)
     for target in operation.targets:
-        target.state = TargetState.unavailable
-        target.detail = "no approval surface in this session"
-        target.extra = {"hint": UNAVAILABLE_HINT.format(name=target.name)}
-    operation.settle(SettleReason.unavailable)
-    payload = operation.result()
-    payload["status"] = "unavailable"
-    payload["note"] = (
-        "This session has no approval card, so local MCP servers cannot be set up here. Tell "
-        "the user to run the terminal commands in each target's 'hint', then continue."
-    )
+        runner.run(_OFF_DESKTOP, operation, target)
+    payload = operation.result(with_urls=True)
+    payload["status"] = "initiated" if any(t.state == TargetState.initiated for t in operation.targets) else "settled"
+    payload["note"] = OFF_DESKTOP_NOTE
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -116,21 +408,23 @@ def run_mcp_operation(
     connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]],
     session_id: Optional[str],
     tool_call_id: Optional[str] = None,
+    backend: Any = None,
 ) -> str:
     error = validate_mcp_names(action, names)
     if error:
         return tool_error(error)
-    targets = [Target(n, "mcp", action) for n in names]
+    runner = open_runner(action, backend)
     session_key = operation_session_key(session_id)
     # The surface decides, not the callback: every tui_gateway session has the callback attached,
     # the Ink TUI included, and only the desktop renders the card.
     if session_platform() != "desktop" or connection_callback is None:
-        return _unavailable(ConnectionOperation(targets, session_key=session_key))
-    def prepare(operation: ConnectionOperation) -> None:
-        pass
-
-    return run_operation(
-        targets, Kind(prepare=prepare, observe=lambda op: None, note=NOTE),
-        session_key=session_key, tool_call_id=tool_call_id, connection_callback=connection_callback,
-        with_urls_in_result=False,
-    )
+        return _off_desktop_result(runner, names, action, session_key)
+    try:
+        return run_operation(
+            [Target(n, "mcp", action) for n in names],
+            Kind(prepare=runner.prepare, observe=runner.observe, note=NOTE),
+            session_key=session_key, tool_call_id=tool_call_id,
+            connection_callback=connection_callback, with_urls_in_result=False,
+        )
+    finally:
+        runner.close()
