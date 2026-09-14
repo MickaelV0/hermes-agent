@@ -295,8 +295,41 @@ class GatewayVoiceMixin:
             user_name=str(user_id), chat_type="channel",
             profile=getattr(adapter, "_owner_profile", None))
 
+    async def _observe_unauthorized_voice(
+        self, adapter, source, guild_id: int, user_id: int, transcript: str
+    ) -> None:
+        """Record a non-allowlisted VC speaker as observed context; never dispatch a turn.
+        Mirrors the Telegram unmentioned-group-chatter path (observed=True rows are context,
+        withheld from replayable history)."""
+        speaker = str(user_id)
+        with suppress(Exception):
+            guild = adapter._client.get_guild(guild_id) if adapter else None
+            member = guild.get_member(int(user_id)) if guild else None
+            if member is not None:
+                speaker = f"{member.display_name} ({user_id})"
+        text = transcript[:2000]
+        with suppress(Exception):
+            channel_id = adapter._voice_text_channels.get(guild_id) if adapter else None
+            channel = adapter._client.get_channel(channel_id) if channel_id else None
+            if channel:
+                safe = text.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                await channel.send(f"**[Voice · observed]** <@{user_id}>: {safe}")
+        try:
+            entry = await self.async_session_store.get_or_create_session(source)
+            await self.async_session_store.append_to_transcript(entry.session_id, {
+                "role": "user",
+                "content": f"[voice channel, observed — {speaker} said, not addressed to you]: {text}",
+                "timestamp": time.time(),
+                "observed": True,
+            })
+        except Exception as exc:
+            logger.warning("Failed to observe unauthorized voice input: %s", exc)
+        logger.info(
+            "Voice observed (no turn) guild=%s user=%s: %s", guild_id, user_id, text[:100])
+
     async def _handle_voice_channel_input(
-        self, guild_id: int, user_id: int, transcript: str, *, adapter=None
+        self, guild_id: int, user_id: int, transcript: str, *, adapter=None,
+        authorized: bool = True,
     ):
         """Handle transcribed voice from a voice channel. ``adapter`` captured the audio; under
         multiplexing each profile's bot dispatches through its own adapter, never the default's."""
@@ -310,8 +343,15 @@ class GatewayVoiceMixin:
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from
         # it, must not silently receive a full agent response on gateway restart just because it has a
         # resume-pending marker (issue #23778).
-        if not self._is_user_authorized_for_source(source):
-            logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
+        if not authorized or not self._is_user_authorized_for_source(source):
+            # discord.voice_transcribe_all: everyone in the VC is transcribed, but a
+            # non-allowlisted speaker never drives a turn. Their words are recorded as
+            # attributed *observed* context on the bound channel's session, so the agent can
+            # hear the room on its next real turn without obeying it.
+            if authorized:
+                logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
+                return
+            await self._observe_unauthorized_voice(adapter, source, guild_id, user_id, transcript)
             return
         if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
             logger.info("Suppressing duplicate voice transcript for guild=%s user=%s: %s",

@@ -698,6 +698,63 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "channel"
 
     @pytest.mark.asyncio
+    async def test_unauthorized_speaker_is_observed_not_dispatched(self, runner):
+        """voice_transcribe_all: a non-allowlisted VC speaker is recorded as observed
+        context and never drives a turn (no prompt injection from the room)."""
+        from gateway.config import Platform
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._client.get_guild = MagicMock(return_value=None)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        store = AsyncMock()
+        store._store = runner.session_store
+        store.get_or_create_session = AsyncMock(
+            return_value=SimpleNamespace(session_id="sess1"))
+        store.append_to_transcript = AsyncMock()
+        runner._async_session_store = store
+
+        await runner._handle_voice_channel_input(
+            111, 42, "je parle mais je ne suis pas autorise", authorized=False)
+
+        mock_adapter.handle_message.assert_not_called()
+        store.append_to_transcript.assert_called_once()
+        session_id, entry = store.append_to_transcript.call_args[0]
+        assert session_id == "sess1"
+        assert entry["observed"] is True
+        assert entry["role"] == "user"
+        assert "je parle mais je ne suis pas autorise" in entry["content"]
+        assert "not addressed to you" in entry["content"]
+        mock_channel.send.assert_called_once()
+        assert "observed" in mock_channel.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_authorized_speaker_still_dispatches(self, runner):
+        """The observed path must not swallow an allowlisted speaker's turn."""
+        from gateway.config import Platform
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=AsyncMock())
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        store = AsyncMock()
+        store._store = runner.session_store
+        store.append_to_transcript = AsyncMock()
+        runner._async_session_store = store
+
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC", authorized=True)
+
+        mock_adapter.handle_message.assert_called_once()
+        store.append_to_transcript.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_input_resolves_channel_prompt(self, runner):
         """Voice input must carry the bound text channel's channel_prompt (#50149)."""
         from gateway.config import Platform
@@ -983,7 +1040,8 @@ class TestDiscordVoiceChannelMethods:
              patch("tools.voice_mode.is_whisper_hallucination", return_value=False):
             await adapter._process_voice_input(111, 42, pcm_data)
 
-        callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")
+        callback.assert_called_once_with(
+            guild_id=111, user_id=42, transcript="Hello", authorized=True)
 
 
         # Should not raise
