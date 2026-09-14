@@ -71,7 +71,8 @@ describe('restoring a pending connection from a resume snapshot', () => {
 
     expect($connectionRequests.get()[SESSION_ID]).toBe(live)
     expect($connectionRequests.get()[SESSION_ID].targets[0].state).toBe('connected')
-    expect(state.request).toBeNull()
+    // The live card is still the pending card: the session keeps waiting on it.
+    expect(state.request).toBe(live)
   })
 
   it('takes the snapshot when it is the newer word on the operation', () => {

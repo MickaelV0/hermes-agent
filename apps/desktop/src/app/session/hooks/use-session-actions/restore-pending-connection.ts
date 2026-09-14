@@ -44,9 +44,10 @@ export function restorePendingConnectionFromSnapshot(
   // A resume snapshot is read once and can land after the live frames it predates. It must not
   // revive a card the operation already settled, nor put back a row a newer frame has moved.
   // Only the same operation can refuse it: a settled cache says nothing about the next operation
-  // the session opened. A refused snapshot is no pending card, so the caller gets none.
+  // the session opened. A settled refusal is no pending card; a newer live frame is still the
+  // pending card, and the caller must keep treating the session as waiting on it.
   if (current?.opId === request.opId && (current.settled || current.seq > request.seq)) {
-    return { authoritativeAbsent: false, cleared: null, request: null }
+    return { authoritativeAbsent: false, cleared: null, request: current.settled ? null : current }
   }
 
   setConnectionRequest(request)
