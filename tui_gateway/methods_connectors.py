@@ -129,21 +129,22 @@ def _reissue(rid, operation, args):
     from tools.connectors.gateway.client import ConnectorClient
     from tui_gateway.connector_payload import connector_ui_payload
 
-    names = [n for n in args["connectors"] if operation.target(n) is not None]
-    if not names:
+    # Only a dead link is re-minted. A waiting target already holds its link (minted up front);
+    # the card re-opens that one and never calls here for it.
+    targets = [operation.target(n) for n in args["connectors"]]
+    if any(t is None for t in targets):
         return _connector_rpc_error(rid, 4004, "UNKNOWN_TARGET", "no such target on the open operation")
-    response = ConnectorClient().connections(names, reinitiate=True)
+    stale = [t.name for t in targets if t.state in (TargetState.failed, TargetState.expired)]
+    if len(stale) != len(targets):
+        return _connector_rpc_error(rid, 4002, "LINK_STILL_VALID",
+                                    "only a failed or expired target can be re-minted; reopen the stored link")
+    response = ConnectorClient().connections(stale, reinitiate=True)
     for entry in response.get("results", []):
         name = str(entry.get("connector") or "").lower()
-        target = operation.target(name)
-        if target is None:
+        if operation.target(name) is None:
             continue
-        url = entry.get("connect_url")
-        if target.state in (TargetState.failed, TargetState.expired):
-            operation.transition(name, TargetState.initiated, Actor.user,
-                                 connect_url=url, detail=str(entry.get("status_reason") or ""))
-        elif target.state == TargetState.initiated and url:
-            operation.refresh_link(name, url)
+        operation.transition(name, TargetState.initiated, Actor.user,
+                             connect_url=entry.get("connect_url"), detail=str(entry.get("status_reason") or ""))
     return _ok(rid, connector_ui_payload(_operation_view(operation)))
 
 

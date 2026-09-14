@@ -157,3 +157,47 @@ def test_connection_update_is_in_the_event_contract():
     from tests.tui_gateway.test_gateway_event_contract import emitted_event_names
 
     assert "connection.update" in emitted_event_names()
+
+
+def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
+    """Try again re-mints a failed or expired target; a waiting target keeps the link it was minted
+    with (the card reopens it), so the RPC refuses rather than spend a second mint."""
+    owner, _, _ = owned
+    operation = _open_op()
+    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/gmail/1")
+    operation.transition("notion", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/notion/1")
+    operation.transition("notion", TargetState.failed, Actor.backend_watcher, detail="vendor: nope")
+    mints = []
+
+    class Client:
+        def connections(self, names, *, reinitiate=False):
+            mints.append((tuple(names), reinitiate))
+            return {"results": [{"connector": n, "status": "initiated", "connect_url": f"https://l/{n}/2"} for n in names]}
+
+    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Client)
+    # The real dispatcher: availability gate passes, then the open operation routes to _reissue.
+    monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
+    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+
+    def long_rpc(**params):
+        # connectors.connect runs on the pool and writes its reply to the transport.
+        before = len(owner.frames)
+        _rpc(owner, "connectors.connect", **params)
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            replies = [f for f in list(owner.frames)[before:] if f.get("id") == 7]
+            if replies:
+                return replies[-1]
+            time.sleep(0.01)
+        raise AssertionError("no reply")
+
+    refused = long_rpc(connectors=["gmail"])
+    assert refused["error"]["code"] == 4002 and mints == []
+    assert operation.target("gmail").connect_url == "https://l/gmail/1"
+
+    reply = long_rpc(connectors=["notion"])
+    assert "result" in reply, reply
+    assert mints == [(("notion",), True)]
+    assert operation.target("notion").state == TargetState.initiated
+    assert operation.target("notion").connect_url == "https://l/notion/2"
+

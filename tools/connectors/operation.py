@@ -100,15 +100,6 @@ class ConnectionOperation:
         self._changed(change)
         return change
 
-    def refresh_link(self, name: str, connect_url: str) -> None:
-        """A re-minted link for a target already waiting on one; not a state change."""
-        target = self.target(name)
-        if target is None:
-            return
-        with self._lock:
-            target.connect_url = connect_url
-        self._changed({"target": name, "connect_url": connect_url})
-
     def _changed(self, change: Optional[Dict[str, Any]]) -> None:
         hook = type(self).on_change
         if hook is not None:

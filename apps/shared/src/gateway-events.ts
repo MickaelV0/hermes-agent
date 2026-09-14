@@ -411,11 +411,10 @@ export interface ConnectionOperationStatus {
 }
 
 /** One change to a connection operation (`tui_gateway/methods_connectors.py::_connection_update`):
- *  a target transition (`target`/`from`/`to`/`actor`), a link refresh (`target`/`connect_url`), or the
- *  settlement (none of those). Every frame carries the full operation snapshot. */
+ *  a target transition (`target`/`from`/`to`/`actor`) or the settlement (none of those). Every frame
+ *  carries the full operation snapshot. */
 export interface ConnectionUpdatePayload extends ConnectionOperationStatus {
   actor?: ConnectionActor
-  connect_url?: string
   detail?: string
   from?: ConnectionTargetState
   target?: string
