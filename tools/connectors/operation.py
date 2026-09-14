@@ -102,6 +102,19 @@ class ConnectionOperation:
         self._changed(change)
         return change
 
+    def refresh(self, name: str, *, connect_url: Optional[str], detail: str) -> None:
+        """Replace a target's link and detail without a state change (a repeated failure)."""
+        target = self.target(name)
+        if target is None:
+            raise IllegalTransition(f"unknown target {name!r}")
+        with self._lock:
+            target.connect_url = connect_url
+            target.detail = detail
+            change = {"target": name, "from": target.state.value, "to": target.state.value, "actor": Actor.user.value,
+                      "detail": detail}
+        self.wake.set()
+        self._changed(change)
+
     def _changed(self, change: Optional[Dict[str, Any]]) -> None:
         hook = type(self).on_change
         if hook is not None:

@@ -41,24 +41,30 @@ def _status_by_slug(client: Any) -> Dict[str, Dict[str, Any]]:
     return {str(i.get("connector", "")).lower(): i for i in client.list_connectors() if isinstance(i, dict)}
 
 
-def _mint(client: Any, operation: ConnectionOperation, names: List[str], *, reinitiate: bool) -> None:
+def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reinitiate: bool, actor: Actor) -> None:
+    """Mint links for ``names`` and apply the gateway's per-app answer to the operation. ``actor`` is
+    the watcher on the first mint and the user on Try again."""
     if not names:
         return
     response = client.connections(names, reinitiate=reinitiate)
     for entry in response.get("results", []):
         name = str(entry.get("connector") or "").lower()
-        if operation.target(name) is None:
+        target = operation.target(name)
+        if target is None:
             continue
         status = str(entry.get("status") or "")
         detail = str(entry.get("status_reason") or entry.get("statusReason") or "")
         if status == "active":
-            operation.transition(name, TargetState.initiated, Actor.backend_watcher)
+            operation.transition(name, TargetState.initiated, actor)
             operation.transition(name, TargetState.connected, Actor.backend_watcher)
         elif status == "initiated":
             operation.transition(
-                name, TargetState.initiated, Actor.backend_watcher,
+                name, TargetState.initiated, actor,
                 connect_url=entry.get("connect_url"), attempt=entry.get("attempt"), detail=detail,
             )
+        elif target.state == TargetState.failed:
+            # Failed again: no state change to emit, but the old link is dead and the vendor's text is new.
+            operation.refresh(name, connect_url=None, detail=detail or status)
         else:
             operation.transition(name, TargetState.failed, Actor.backend_watcher, detail=detail or status)
 
@@ -93,10 +99,10 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
     def prepare(operation: ConnectionOperation) -> None:
         names = [t.name for t in operation.targets]
         if action == "connect":
-            _mint(client, operation, names, reinitiate=False)
+            mint(client, operation, names, reinitiate=False, actor=Actor.backend_watcher)
             return
         if force:
-            _mint(client, operation, names, reinitiate=True)
+            mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher)
             return
         status = _status_by_slug(client)
         repair = []
@@ -106,7 +112,7 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
                 operation.transition(name, TargetState.connected, Actor.backend_watcher)
             else:
                 repair.append(name)
-        _mint(client, operation, repair, reinitiate=True)
+        mint(client, operation, repair, reinitiate=True, actor=Actor.backend_watcher)
 
     return prepare
 

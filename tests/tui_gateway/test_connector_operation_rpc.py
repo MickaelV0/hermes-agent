@@ -201,3 +201,29 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
     assert operation.target("notion").state == TargetState.initiated
     assert operation.target("notion").connect_url == "https://l/notion/2"
 
+
+def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch):
+    """Try again whose mint fails must not show the row as waiting on the old dead link."""
+    owner, _, _ = owned
+    operation = _open_op()
+    operation.transition("notion", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/notion/1")
+    operation.transition("notion", TargetState.failed, Actor.backend_watcher, detail="vendor: nope")
+
+    class Client:
+        def connections(self, names, *, reinitiate=False):
+            return {"results": [{"connector": n, "status": "failed", "status_reason": "vendor: still no"} for n in names]}
+
+    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Client)
+    monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
+    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+
+    before = len(owner.frames)
+    _rpc(owner, "connectors.connect", connectors=["notion"])
+    deadline = time.time() + 2
+    while time.time() < deadline and not [f for f in list(owner.frames)[before:] if f.get("id") == 7]:
+        time.sleep(0.01)
+    target = operation.target("notion")
+    assert target.state == TargetState.failed
+    assert target.connect_url is None
+    assert target.detail == "vendor: still no"
+

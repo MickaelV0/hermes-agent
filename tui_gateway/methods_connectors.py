@@ -127,6 +127,7 @@ def _reissue(rid, operation, args):
     """Re-mint links for the named targets on the open operation (user actor)."""
     from tools.connectors.contract import Actor, TargetState
     from tools.connectors.gateway.client import ConnectorClient
+    from tools.connectors.managed import mint
     from tui_gateway.connector_payload import connector_ui_payload
 
     # Only a dead link is re-minted. A waiting target already holds its link (minted up front);
@@ -138,13 +139,7 @@ def _reissue(rid, operation, args):
     if len(stale) != len(targets):
         return _connector_rpc_error(rid, 4002, "LINK_STILL_VALID",
                                     "only a failed or expired target can be re-minted; reopen the stored link")
-    response = ConnectorClient().connections(stale, reinitiate=True)
-    for entry in response.get("results", []):
-        name = str(entry.get("connector") or "").lower()
-        if operation.target(name) is None:
-            continue
-        operation.transition(name, TargetState.initiated, Actor.user,
-                             connect_url=entry.get("connect_url"), detail=str(entry.get("status_reason") or ""))
+    mint(ConnectorClient(), operation, stale, reinitiate=True, actor=Actor.user)
     return _ok(rid, connector_ui_payload(_operation_view(operation)))
 
 
