@@ -83,6 +83,10 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
         row = status.get(target.name)
         if row is None:
             continue
+        if target.awaiting_new_attempt:
+            if str(row.get("connectionStatus") or "").lower() == "initiated":
+                target.awaiting_new_attempt = False
+            continue
         if row.get("connected"):
             if target.state == TargetState.pending:
                 operation.transition(target.name, TargetState.initiated, Actor.backend_watcher)
@@ -103,6 +107,9 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
             return
         if force:
             mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher)
+            for target in operation.targets:
+                if target.state == TargetState.initiated:
+                    target.awaiting_new_attempt = True
             return
         status = _status_by_slug(client)
         repair = []

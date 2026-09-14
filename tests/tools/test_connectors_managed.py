@@ -39,13 +39,22 @@ class GatewayFake:
         self.status_reason = status_reason
         self.lists = 0
         self.mints = []
+        self.statuses = {}  # slug -> connectionStatus per list call (last value repeats)
 
     def list_connectors(self):
         self.lists += 1
         for slug, on in self.flips.items():
             if self.lists >= on:
                 self.connected.add(slug)
-        return [{"connector": s, "enabled": True, "connected": s in self.connected} for s in ("gmail", "notion")]
+        rows = []
+        for s in ("gmail", "notion"):
+            row = {"connector": s, "enabled": True, "connected": s in self.connected}
+            script = self.statuses.get(s)
+            if script:
+                row["connectionStatus"] = script[min(self.lists, len(script)) - 1]
+                row["connected"] = row["connectionStatus"] == "active"
+            rows.append(row)
+        return rows
 
     def connections(self, connectors, *, reinitiate=False):
         self.mints.append((tuple(connectors), reinitiate))
@@ -190,8 +199,20 @@ def test_reconnect_on_an_active_target_makes_no_gateway_mint():
 
 def test_reconnect_force_always_reinitiates_even_when_active():
     gw = GatewayFake(connected={"gmail"}, flips={"gmail": 1})
-    _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=_desktop_callback())
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
+        _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=_desktop_callback(), tick=0.01)
     assert gw.mints == [(("gmail",), True)]
+
+
+def test_force_does_not_settle_connected_from_the_old_account():
+    """An account switch: the vendor keeps the old account active while the new link waits. `connected`
+    on the list is the old account until the list has shown the new attempt (`initiated`) once."""
+    gw = GatewayFake(connected={"gmail"})
+    gw.statuses = {"gmail": ["active", "active", "initiated", "active"]}
+    out = _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=_desktop_callback(), tick=0.01)
+    assert out["settled_by"] == "all_resolved"
+    assert out["targets"][0]["state"] == "connected"
+    assert gw.lists == 4  # reads 1-2 were the old account; 3 saw the new attempt; 4 saw it connected
 
 
 def test_reconnect_on_a_disconnected_target_reinitiates():

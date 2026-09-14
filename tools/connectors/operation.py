@@ -28,6 +28,9 @@ class Target:
     connect_url: Optional[str] = None
     # Opaque per-attempt handle when the gateway mints one (absent today; the status route adds it).
     attempt: Optional[str] = None
+    # `reconnect force` on a connected account: the list reports the OLD account `active` until the user
+    # signs in again, so `connected` is not believed until the list has shown the new attempt once.
+    awaiting_new_attempt: bool = False
     # Renderer-reported fields passed through to the model (``tools`` after MCP OAuth).
     extra: Dict[str, Any] = field(default_factory=dict)
 
