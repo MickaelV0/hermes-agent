@@ -79,7 +79,7 @@ class FakeConnectorClient:
         self._connected = set()
         self._lock = threading.Lock()
 
-    def list_connectors(self):
+    def list_connectors(self, **_):
         with self._lock:
             connected = set(self._connected)
         return [

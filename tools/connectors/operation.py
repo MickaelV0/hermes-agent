@@ -68,6 +68,8 @@ class ConnectionOperation:
 
     targets: List[Target]
     session_key: str = ""
+    # Stamped by ``live.open``: the profile home the operation was opened under.
+    profile_key: str = ""
     # The model's id for the call that opened the operation; the card binds to that tool row only.
     tool_call_id: Optional[str] = None
     op_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])

@@ -103,20 +103,23 @@ class ConnectorClient:
         return wire.ConnectorSchemasResponse.model_validate(payload).model_dump()
 
     def connections(
-        self, connectors: Sequence[str], *, reinitiate: bool = False
+        self, connectors: Sequence[str], *, reinitiate: bool = False,
+        return_to: Optional[str] = None, op: Optional[str] = None,
     ) -> dict[str, Any]:
         """Never retry: the gateway cannot deduplicate authorization starts."""
         body = wire.ConnectorConnectionsRequest(
-            connectors=list(connectors), reinitiate=reinitiate
+            connectors=list(connectors), reinitiate=reinitiate, return_to=return_to, op=op,
         ).model_dump(by_alias=True, exclude_none=True)
         payload = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
         return wire.ConnectorConnectionsResponse.model_validate(payload).model_dump()
 
     def list_connectors(
-        self, *, search: Optional[str] = None, connected: Optional[bool] = None
+        self, *, search: Optional[str] = None, connected: Optional[bool] = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> list[dict[str, Any]]:
         """Every page of the session's toolkit list, each typed whole; ``total`` is parsed and dropped
-        until a caller needs it."""
+        until a caller needs it. ``timeout`` applies per page: the watcher bounds it by the operation's
+        remaining deadline so a stalled page cannot hold the operation open."""
         if search is not None and len(search) < MIN_SEARCH_CHARS:
             raise ValueError(f"search needs at least {MIN_SEARCH_CHARS} characters")
         query = "?limit=50"
@@ -130,7 +133,8 @@ class ConnectorClient:
             path = f"{wire.CONNECTORS_PATH}{query}"
             if cursor:
                 path += f"&cursor={cursor}"
-            page = self._parse(wire.ConnectorListResponse, self._request("GET", path, None), "connector list page")
+            page = self._parse(wire.ConnectorListResponse, self._request("GET", path, None, timeout=timeout),
+                               "connector list page")
             items.extend(item.model_dump(by_alias=True) for item in page.items)
             cursor = page.next_cursor
             if not cursor:
@@ -170,7 +174,9 @@ class ConnectorClient:
             raise ToolGatewayError(f"invalid {what}: {'.'.join(str(p) for p in first.get('loc', ()))}: {first.get('msg')}",
                                    code="INVALID_RESPONSE") from exc
 
-    def execute(self, planned: Sequence[PlannedCall]) -> list[dict[str, Any]]:
+    def execute(
+        self, planned: Sequence[PlannedCall], *, return_to: Optional[str] = None, op: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         """Return gateway results in request order; merge owns length mismatches."""
         body = wire.ConnectorExecuteRequest(
             tools=[
@@ -178,7 +184,8 @@ class ConnectorClient:
                     connector=plan.connector, tool=plan.tool, arguments=plan.arguments
                 )
                 for plan in planned
-            ]
+            ],
+            return_to=return_to, op=op,
         ).model_dump(by_alias=True, exclude_none=True)
         # Keep the key dispatch-local so its retry reuses it without a shared store.
         idempotency_key = str(uuid.uuid4())

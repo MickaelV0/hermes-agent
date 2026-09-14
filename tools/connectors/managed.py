@@ -41,8 +41,9 @@ def _default_client():
     return ConnectorClient()
 
 
-def _status_by_slug(client: Any) -> Dict[str, Dict[str, Any]]:
-    return {str(i.get("connector", "")).lower(): i for i in client.list_connectors() if isinstance(i, dict)}
+def _status_by_slug(client: Any, *, timeout: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
+    rows = client.list_connectors() if timeout is None else client.list_connectors(timeout=timeout)
+    return {str(i.get("connector", "")).lower(): i for i in rows if isinstance(i, dict)}
 
 
 def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reinitiate: bool, actor: Actor) -> None:
@@ -104,9 +105,13 @@ def _decorate(operation: ConnectionOperation, status_by_slug: Dict[str, Dict[str
             target.icon_url = str(row.get("iconUrl") or "")
 
 
+# A page read never outlives the operation, and never asks for less than one second.
+_MIN_READ_SECONDS = 1.0
+
+
 def _observe(client: Any, operation: ConnectionOperation) -> None:
     try:
-        status_by_slug = _status_by_slug(client)
+        status_by_slug = _status_by_slug(client, timeout=max(_MIN_READ_SECONDS, operation.remaining_seconds()))
     except Exception as exc:
         logger.debug("connector watch poll failed: %s", exc)
         return

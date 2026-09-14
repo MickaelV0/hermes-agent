@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 CONNECTORS_PATH = "v1/connectors"
 CONNECTOR_SEARCH_PATH = f"{CONNECTORS_PATH}/search"
@@ -21,6 +21,8 @@ CONNECTOR_ACCOUNTS_PATH = f"{CONNECTORS_PATH}/accounts"
 # account; a value outside this set is a contract break and fails validation.
 ConnectionStatus = Literal["pending", "active", "failed", "expired", "revoked", "inactive"]
 ConnectorAuthKind = Literal["oauth", "api_key", "none", "other"]
+# Where the vendor's done page sends the browser after consent; the dev desktop registers hermes-dev://.
+ConnectorReturnTarget = Literal["hermes-desktop", "hermes-desktop-dev", "portal"]
 
 # Hermes dispatch caps batches lower, so client-side chunking is deliberately absent.
 WIRE_BATCH_MAX = 25
@@ -96,15 +98,9 @@ class ConnectorToolError(_Wire):
     message: str
     connector: Optional[str] = None
     connect_url: Optional[str] = Field(default=None, alias="connectUrl")
-    # The account the link was minted for. Present together with the link or not at all.
+    # The account the link was minted for; absent when the link mint failed. Absent means nothing to watch.
     connection_id: Optional[str] = Field(default=None, alias="connectionId")
     hint: Optional[str] = None
-
-    @model_validator(mode="after")
-    def _link_and_account_travel_together(self) -> "ConnectorToolError":
-        if self.code == "CONNECTION_REQUIRED" and (self.connect_url is None) != (self.connection_id is None):
-            raise ValueError("CONNECTION_REQUIRED carries connectUrl and connectionId together or neither")
-        return self
 
 
 class ConnectorExecuteCall(_Wire):
@@ -118,6 +114,9 @@ class ConnectorExecuteCall(_Wire):
 
 class ConnectorExecuteRequest(_Wire):
     tools: list[ConnectorExecuteCall]
+    # Ride any CONNECTION_REQUIRED link the call mints back to the surface that asked.
+    return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
+    op: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
 class ConnectorExecuteResult(_Wire):
@@ -140,28 +139,23 @@ class ConnectorConnectionsRequest(_Wire):
     connectors: list[str]
     reinitiate: bool = False
     alias: Optional[str] = None
+    return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
+    # The caller's operation id, echoed on the hermes://connections/done link.
+    op: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
 class ConnectorConnectionResult(_Wire):
     connector: str
     status: Literal["active", "initiated", "failed"]
     connect_url: Optional[str] = Field(default=None, alias="connectUrl")
-    # The vendor account the mint created (`initiated`) or observed (`active`, absent for a no-auth
-    # toolkit); a `failed` mint has none.
+    # The vendor account the mint created or observed. Optional by vendor semantics (a no-auth toolkit
+    # answers active with none); a target without one has nothing to watch.
     connection_id: Optional[str] = Field(default=None, alias="connectionId")
     alias: Optional[str] = None
     instruction: Optional[str] = None
     # Vendor error_message on ``failed``; the list route never carries it.
     status_reason: Optional[str] = Field(default=None, alias="statusReason")
     reinitiated: bool = False
-
-    @model_validator(mode="after")
-    def _account_follows_the_status(self) -> "ConnectorConnectionResult":
-        if self.status == "initiated" and not self.connection_id:
-            raise ValueError("an initiated mint names its connectionId")
-        if self.status == "failed" and self.connection_id is not None:
-            raise ValueError("a failed mint has no connectionId")
-        return self
 
 
 class ConnectorListItem(_Wire):

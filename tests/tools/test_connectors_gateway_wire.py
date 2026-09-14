@@ -49,26 +49,29 @@ def test_list_page_is_typed_whole_with_its_total():
         wire.ConnectorListResponse.model_validate({"items": [ITEM], "nextCursor": None})
 
 
-def test_mint_result_carries_the_account_id_only_where_the_vendor_does():
+def test_the_account_id_is_optional_by_vendor_semantics_and_absent_means_nothing_to_watch():
+    """A no-auth toolkit answers active with no account; a failed mint answers CONNECTION_REQUIRED with
+    neither link nor id. The id is typed Optional and never inferred (portal handoff, rule 2)."""
     initiated = wire.ConnectorConnectionResult.model_validate(
         {"connector": "gmail", "status": "initiated", "connectUrl": "https://c/1", "connectionId": "ca_1"})
     assert initiated.connection_id == "ca_1"
-    with pytest.raises(ValidationError):
-        wire.ConnectorConnectionResult.model_validate({"connector": "gmail", "status": "initiated", "connectUrl": "https://c/1"})
-    with pytest.raises(ValidationError):
-        wire.ConnectorConnectionResult.model_validate({"connector": "gmail", "status": "failed", "connectionId": "ca_1"})
-    # A no-auth toolkit answers active with no account.
+    assert wire.ConnectorConnectionResult.model_validate(
+        {"connector": "gmail", "status": "initiated", "connectUrl": "https://c/1"}).connection_id is None
     assert wire.ConnectorConnectionResult.model_validate({"connector": "wiki", "status": "active"}).connection_id is None
-
-
-def test_connection_required_carries_link_and_account_together_or_not_at_all():
     base = {"code": "CONNECTION_REQUIRED", "message": "connect gmail", "connector": "gmail"}
-    both = wire.ConnectorToolError.model_validate({**base, "connectUrl": "https://c/1", "connectionId": "ca_1"})
-    assert both.connection_id == "ca_1"
     assert wire.ConnectorToolError.model_validate(base).connection_id is None
-    for half in ({"connectUrl": "https://c/1"}, {"connectionId": "ca_1"}):
-        with pytest.raises(ValidationError):
-            wire.ConnectorToolError.model_validate({**base, **half})
+    assert wire.ConnectorToolError.model_validate({**base, "connectUrl": "https://c/1"}).connection_id is None
+    assert wire.ConnectorToolError.model_validate({**base, "connectUrl": "https://c/1", "connectionId": "ca_1"}).connection_id == "ca_1"
+
+
+def test_connect_and_execute_requests_carry_the_return_target_and_the_operation_id():
+    body = wire.ConnectorConnectionsRequest(connectors=["gmail"], return_to="hermes-desktop", op="op_1").model_dump(
+        by_alias=True, exclude_none=True)
+    assert body == {"connectors": ["gmail"], "reinitiate": False, "returnTo": "hermes-desktop", "op": "op_1"}
+    with pytest.raises(ValidationError):
+        wire.ConnectorConnectionsRequest(connectors=["gmail"], return_to="portal-web")
+    execute = wire.ConnectorExecuteRequest(tools=[], return_to="hermes-desktop-dev").model_dump(by_alias=True, exclude_none=True)
+    assert execute == {"tools": [], "returnTo": "hermes-desktop-dev"}
 
 
 def test_account_row_is_typed_per_the_contract():

@@ -102,7 +102,8 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
         return _connector_rpc_error(rid, 4031, "CONNECTORS_UNAVAILABLE", "Connectors are not available in this session.")
     if not _connector_owner_matches(sid, owner, profile_home):
         return _connector_rpc_error(rid, 4001, "NOT_OWNER", "session ownership changed")
-    if args["action"] != "status" and (operation := live.current(owner["session_key"])) is not None:
+    if args["action"] != "status" and (
+            operation := live.current(owner["session_key"], profile_home=owner.get("profile_home"))) is not None:
         # The card's Try again / Connect while the model's operation is open: reissue on that op.
         return _reissue(rid, operation, args)
     raw = model_tools.handle_function_call(
@@ -149,7 +150,7 @@ def _live_operation(rid, params, owner):
     op_id = params.get("op_id")
     if not isinstance(op_id, str) or not op_id:
         return None, _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "op_id required")
-    operation = live.get(owner["session_key"], op_id)
+    operation = live.get(owner["session_key"], op_id, profile_home=owner.get("profile_home"))
     if operation is None:
         return None, _connector_rpc_error(rid, 4004, "UNKNOWN_OPERATION", "no open operation with that op_id in this session")
     return operation, None

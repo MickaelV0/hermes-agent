@@ -40,9 +40,11 @@ class GatewayFake:
         self.lists = 0
         self.mints = []
         self.statuses = {}  # slug -> connectionStatus per list call (last value repeats)
+        self.timeouts = []
 
-    def list_connectors(self):
+    def list_connectors(self, *, timeout=None):
         self.lists += 1
+        self.timeouts.append(timeout)
         for slug, on in self.flips.items():
             if self.lists >= on:
                 self.connected.add(slug)
@@ -123,6 +125,16 @@ def test_card_targets_carry_the_toolkit_metadata_and_the_account_id():
     assert target["title"] == "Gmail" and target["icon_url"] == "https://logos.composio.dev/api/gmail"
     assert target["connection_id"] == "ca_gmail_1"
     assert out["targets"][0]["connection_id"] == "ca_gmail_1"
+
+
+def test_every_watch_read_is_bounded_by_the_remaining_deadline():
+    """A stalled gateway page cannot hold the operation past its deadline (P1-8 residual)."""
+    gw = GatewayFake()
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 2.0):
+        _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.2)
+    watch_reads = gw.timeouts[1:]  # the first read decorates the card before the deadline clock matters
+    assert watch_reads and all(t is not None and 0 < t <= 2.0 for t in watch_reads)
+    assert watch_reads == sorted(watch_reads, reverse=True)  # each read shrinks with the deadline, down to the floor
 
 
 def test_a_pending_row_moves_nothing_and_a_revoked_row_is_failed():
@@ -248,8 +260,8 @@ def test_force_reads_a_failed_new_attempt_as_failed_not_as_still_waiting():
     op_id = {}
     original = gw.list_connectors
 
-    def spy():
-        rows = original()
+    def spy(**kwargs):
+        rows = original(**kwargs)
         op = live.get("s1", op_id["v"]) if op_id else None
         if op is not None:
             seen.append(op.target("gmail").state.value)
@@ -330,14 +342,14 @@ def test_continue_during_a_connected_read_keeps_the_settled_result():
     settled = threading.Event()
     original = gw.list_connectors
 
-    def slow_list():
-        rows = original()
+    def slow_list(**kwargs):
+        rows = original(**kwargs)
         if gw.lists == 2:
             live_op = live.get("s1", op_id["v"])
             live_op.settle(c.SettleReason.continue_)
             settled.set()
             gw.connected.add("gmail")
-            rows = original()
+            rows = original(**kwargs)
         return rows
 
     gw.list_connectors = slow_list

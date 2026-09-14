@@ -41,7 +41,7 @@ class FakeTransport:
 
     def request(self, method, url, *, headers=None, json=None, timeout=None):
         self.requests.append(
-            {"method": method, "url": url, "headers": dict(headers or {}), "json": json}
+            {"method": method, "url": url, "headers": dict(headers or {}), "json": json, "timeout": timeout}
         )
         outcome = self.responses.pop(0)
         if isinstance(outcome, Exception):
@@ -381,3 +381,9 @@ def test_account_status_answers_none_on_404_and_rate_limited_on_429():
         client.account_status("ca_1")
     assert caught.value.retry_after == 1.5
     assert len(transport.requests) == 3  # a 429 is never retried by the client
+
+
+def test_list_honours_a_caller_timeout_per_page():
+    transport = FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None, "total": 1}))
+    make_client(transport).list_connectors(timeout=2.5)
+    assert transport.requests[0]["timeout"] == 2.5
