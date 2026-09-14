@@ -2,8 +2,9 @@ import { cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ConnectorLogo } from '@/components/ui/connector-logo'
+import { connectorIconUrl } from '@/lib/connector-tools'
 
-const ICON = 'https://logos.composio.dev/api/acme'
+const ICON = connectorIconUrl('acme')
 
 afterEach(() => {
   cleanup()
@@ -11,6 +12,10 @@ afterEach(() => {
 })
 
 describe('the connector mark ladder', () => {
+  it('derives the vendor logo from the toolkit slug', () => {
+    expect(connectorIconUrl('gmail')).toBe('https://logos.composio.dev/api/gmail')
+  })
+
   it('draws the vendor icon as a plain image, ahead of any favicon lookup', () => {
     const resolveFavicon = vi.fn()
     // SAFETY: the favicon rung reads only `resolveFavicon` from the preload bridge.

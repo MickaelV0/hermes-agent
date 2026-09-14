@@ -24,12 +24,10 @@ const LINEAR: ConnectionTarget = {
   connectUrl: null,
   connectionId: '',
   detail: '',
-  iconUrl: '',
   kind: 'mcp',
   name: 'linear',
   requiredEnv: [],
   state: 'pending',
-  title: '',
   tools: []
 }
 

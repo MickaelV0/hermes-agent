@@ -50,8 +50,7 @@ class GatewayFake:
                 self.connected.add(slug)
         rows = []
         for s in ("gmail", "notion"):
-            row = {"connector": s, "enabled": True, "connected": s in self.connected, "title": s.title(),
-                   "description": f"{s} mail", "iconUrl": f"https://logos.composio.dev/api/{s}", "authKind": "oauth"}
+            row = {"connector": s, "enabled": True, "connected": s in self.connected}
             script = self.statuses.get(s)
             if script:
                 row["connectionStatus"] = script[min(self.lists, len(script)) - 1]
@@ -116,13 +115,11 @@ def test_wait_is_gone_and_force_exists():
 # ---------------------------------------------------------------------------
 
 
-def test_card_targets_carry_the_toolkit_metadata_and_the_account_id():
-    """The card draws the vendor's title and icon and the model result names the account the mint made."""
+def test_card_targets_carry_the_account_id_the_mint_named():
     gw = GatewayFake(flips={"gmail": 2})
     cb = _desktop_callback()
     out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=cb)
     (target,) = cb.seen[0]["targets"]
-    assert target["title"] == "Gmail" and target["icon_url"] == "https://logos.composio.dev/api/gmail"
     assert target["connection_id"] == "ca_gmail_1"
     assert out["targets"][0]["connection_id"] == "ca_gmail_1"
 
@@ -132,7 +129,7 @@ def test_every_watch_read_is_bounded_by_the_remaining_deadline():
     gw = GatewayFake()
     with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 2.0):
         _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.2)
-    watch_reads = gw.timeouts[1:]  # the first read decorates the card before the deadline clock matters
+    watch_reads = gw.timeouts
     assert watch_reads and all(t is not None and 0 < t <= 2.0 for t in watch_reads)
     assert watch_reads == sorted(watch_reads, reverse=True)  # each read shrinks with the deadline, down to the floor
 

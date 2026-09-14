@@ -15,8 +15,7 @@ def test_connections_result_carries_status_reason_under_either_spelling():
         assert row.status_reason == "vendor: bad scope"
 
 
-ITEM = {"connector": "gmail", "connected": False, "title": "Gmail", "description": "Mail",
-        "iconUrl": "https://logos.composio.dev/api/gmail", "authKind": "oauth"}
+ITEM = {"connector": "gmail", "connected": False}
 
 
 def test_list_item_accepts_the_six_contract_states_and_absence():
@@ -32,21 +31,11 @@ def test_list_item_rejects_the_retired_seven_state_words():
             wire.ConnectorListItem.model_validate({**ITEM, "connectionStatus": value})
 
 
-def test_list_item_requires_the_toolkit_metadata():
-    for missing in ("title", "description", "iconUrl", "authKind"):
-        with pytest.raises(ValidationError):
-            wire.ConnectorListItem.model_validate({k: v for k, v in ITEM.items() if k != missing})
+def test_list_page_is_typed_whole():
+    page = wire.ConnectorListResponse.model_validate({"items": [ITEM], "nextCursor": None})
+    assert page.next_cursor is None and page.items[0].connector == "gmail"
     with pytest.raises(ValidationError):
-        wire.ConnectorListItem.model_validate({**ITEM, "iconUrl": "http://logos.composio.dev/api/gmail"})
-    item = wire.ConnectorListItem.model_validate({**ITEM, "activeConnectionId": "ca_1"})
-    assert item.icon_url == ITEM["iconUrl"] and item.auth_kind == "oauth" and item.active_connection_id == "ca_1"
-
-
-def test_list_page_is_typed_whole_with_its_total():
-    page = wire.ConnectorListResponse.model_validate({"items": [ITEM], "nextCursor": None, "total": 3})
-    assert page.total == 3 and page.next_cursor is None and page.items[0].title == "Gmail"
-    with pytest.raises(ValidationError):
-        wire.ConnectorListResponse.model_validate({"items": [ITEM], "nextCursor": None})
+        wire.ConnectorListResponse.model_validate({"items": [{"connected": False}], "nextCursor": None})
 
 
 def test_the_account_id_is_optional_by_vendor_semantics_and_absent_means_nothing_to_watch():

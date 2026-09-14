@@ -78,18 +78,15 @@ describe('connection-request store', () => {
     expect(parsed?.settled).toBe(false)
   })
 
-  it('carries the toolkit title, icon and account id through unchanged', () => {
-    const decorated = {
-      ...WIRE,
-      targets: [{ ...WIRE.targets[0], connection_id: 'ca_1', icon_url: 'https://logos.composio.dev/api/gmail', title: 'Gmail' }]
-    }
+  it('carries the account id the mint named through unchanged', () => {
+    const decorated = { ...WIRE, targets: [{ ...WIRE.targets[0], connection_id: 'ca_1' }] }
     const parsed = normalizeConnectionRequest(decorated, 's')!
 
-    expect(parsed.targets[0]).toMatchObject({ connectionId: 'ca_1', iconUrl: 'https://logos.composio.dev/api/gmail', title: 'Gmail' })
+    expect(parsed.targets[0]).toMatchObject({ connectionId: 'ca_1' })
 
     const updated = applyConnectionUpdate(parsed, frame({ gmail: 'initiated' }, { targets: decorated.targets.map(t => ({ ...t, state: 'initiated' as const })) }))
 
-    expect(updated.targets[0]).toMatchObject({ connectionId: 'ca_1', iconUrl: 'https://logos.composio.dev/api/gmail', state: 'initiated', title: 'Gmail' })
+    expect(updated.targets[0]).toMatchObject({ connectionId: 'ca_1', state: 'initiated' })
   })
 
   it('carries the credentials an MCP install still waits for, and holds the row across a repeat frame', () => {

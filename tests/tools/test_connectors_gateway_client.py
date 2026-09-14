@@ -339,24 +339,16 @@ def test_default_resolver_is_none_on_a_misconfigured_scheme():
 # ---------------------------------------------------------------------------
 
 
-LIST_ITEM = {"connector": "gmail", "enabled": True, "connected": False, "disabledTools": [], "title": "Gmail",
-             "description": "Mail", "iconUrl": "https://logos.composio.dev/api/gmail", "authKind": "oauth"}
+LIST_ITEM = {"connector": "gmail", "enabled": True, "connected": False, "disabledTools": []}
 
 
-def test_list_search_shorter_than_three_characters_raises_before_any_request():
-    transport = FakeTransport()
-    with pytest.raises(ValueError):
-        make_client(transport).list_connectors(search="gm")
-    assert transport.requests == []
-
-
-def test_list_sends_search_and_connected_and_parses_the_whole_page():
-    transport = FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None, "total": 1}))
-    rows = make_client(transport).list_connectors(search="gmail", connected=False)
-    assert transport.requests[0]["url"].endswith("v1/connectors?limit=50&search=gmail&connected=false")
-    assert rows[0]["title"] == "Gmail" and rows[0]["iconUrl"] == LIST_ITEM["iconUrl"]
+def test_list_parses_the_whole_page_and_fails_loud_on_a_malformed_item():
+    transport = FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None}))
+    rows = make_client(transport).list_connectors()
+    assert transport.requests[0]["url"].endswith("v1/connectors?limit=50")
+    assert rows[0]["connector"] == "gmail" and rows[0]["connectionStatus"] is None
     with pytest.raises(ToolGatewayError):
-        make_client(FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None}))).list_connectors()
+        make_client(FakeTransport(FakeResponse(200, {"items": [{"connected": False}], "nextCursor": None}))).list_connectors()
 
 
 def test_execute_never_sends_account_until_multi_account_is_on():
@@ -384,6 +376,6 @@ def test_account_status_answers_none_on_404_and_rate_limited_on_429():
 
 
 def test_list_honours_a_caller_timeout_per_page():
-    transport = FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None, "total": 1}))
+    transport = FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None}))
     make_client(transport).list_connectors(timeout=2.5)
     assert transport.requests[0]["timeout"] == 2.5

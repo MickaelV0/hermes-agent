@@ -31,22 +31,19 @@ export function mcpTargets(toolName: string, args: ToolCallMessagePart['result']
 /** The gateway's six-state account status; `pending` covers the vendor's INITIALIZING and INITIATED. */
 export type ConnectionStatus = 'active' | 'expired' | 'failed' | 'inactive' | 'pending' | 'revoked'
 
-export type ConnectorAuthKind = 'api_key' | 'none' | 'oauth' | 'other'
-
 /** One `GET /v1/connectors` item as the gateway sends it. Display-only; these fields never grant access. */
 export interface ConnectorRow {
-  activeConnectionId?: string
-  authKind: ConnectorAuthKind
   connected: boolean
   connectionStatus?: ConnectionStatus
   connector: string
-  description: string
   disabledTools?: string[]
   enabled: boolean
-  iconUrl: string
   statusReason?: string
-  title: string
 }
+
+/** The vendor's public logo for a toolkit, keyed by its slug (the gateway slug is the vendor slug; checked
+ *  for every lead-order pick). Served as an SVG with no CORS header, so it is only ever an `<img src>`. */
+export const connectorIconUrl = (slug: string): string => `https://logos.composio.dev/api/${slug}`
 
 
 export function connectorText(value: ToolCallMessagePart['result']): string | undefined {

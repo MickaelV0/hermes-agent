@@ -28,9 +28,6 @@ class Target:
     connect_url: Optional[str] = None
     # The vendor account a managed mint created or observed. Not the desktop transport's connection id.
     connection_id: Optional[str] = None
-    # From the toolkit list; the card draws them. Empty for an MCP target.
-    title: str = ""
-    icon_url: str = ""
     # Opaque per-attempt handle when the gateway mints one (absent today; the status route adds it).
     attempt: Optional[str] = None
     # `reconnect force` on a connected account: the list reports the OLD account `active` until the user
@@ -54,10 +51,6 @@ class Target:
             out["connect_url"] = self.connect_url
         if self.connection_id:
             out["connection_id"] = self.connection_id
-        if self.title:
-            out["title"] = self.title
-        if self.icon_url:
-            out["icon_url"] = self.icon_url
         if self.attempt:
             out["attempt"] = self.attempt
         if self.required_env:

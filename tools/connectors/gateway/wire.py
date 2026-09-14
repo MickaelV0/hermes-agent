@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 CONNECTORS_PATH = "v1/connectors"
 CONNECTOR_SEARCH_PATH = f"{CONNECTORS_PATH}/search"
@@ -20,7 +20,6 @@ CONNECTOR_ACCOUNTS_PATH = f"{CONNECTORS_PATH}/accounts"
 # INITIALIZING and INITIATED both arrive as `pending`). Present only once the session binds an
 # account; a value outside this set is a contract break and fails validation.
 ConnectionStatus = Literal["pending", "active", "failed", "expired", "revoked", "inactive"]
-ConnectorAuthKind = Literal["oauth", "api_key", "none", "other"]
 # Where the vendor's done page sends the browser after consent; the dev desktop registers hermes-dev://.
 ConnectorReturnTarget = Literal["hermes-desktop", "hermes-desktop-dev", "portal"]
 
@@ -165,26 +164,11 @@ class ConnectorListItem(_Wire):
     connection_status: Optional[ConnectionStatus] = Field(default=None, alias="connectionStatus")
     status_reason: Optional[str] = Field(default=None, alias="statusReason")
     disabled_tools: list[str] = Field(default_factory=list, alias="disabledTools")
-    # Absent when the session binds no account (a pending account is never bound).
-    active_connection_id: Optional[str] = Field(default=None, alias="activeConnectionId")
-    title: str = Field(min_length=1)
-    description: str = Field(min_length=1)
-    icon_url: str = Field(alias="iconUrl")
-    auth_kind: ConnectorAuthKind = Field(alias="authKind")
-
-    @field_validator("icon_url")
-    @classmethod
-    def _https_only(cls, value: str) -> str:
-        if not value.startswith("https://"):
-            raise ValueError("iconUrl must be https")
-        return value
 
 
 class ConnectorListResponse(_Wire):
     items: list[ConnectorListItem]
     next_cursor: Optional[str] = Field(alias="nextCursor")
-    # The whole filtered result set, not the page.
-    total: int = Field(ge=0)
 
 
 class ConnectorAccount(_Wire):

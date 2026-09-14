@@ -20,8 +20,6 @@ from tools.connectors.gateway.errors import (
     parse_gateway_error,
 )
 
-# The vendor answers 400 to a shorter search; hermes refuses before the request.
-MIN_SEARCH_CHARS = 3
 from tools.connectors.gateway.merge import PlannedCall
 
 logger = logging.getLogger(__name__)
@@ -113,24 +111,14 @@ class ConnectorClient:
         payload = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
         return wire.ConnectorConnectionsResponse.model_validate(payload).model_dump()
 
-    def list_connectors(
-        self, *, search: Optional[str] = None, connected: Optional[bool] = None,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
-    ) -> list[dict[str, Any]]:
-        """Every page of the session's toolkit list, each typed whole; ``total`` is parsed and dropped
-        until a caller needs it. ``timeout`` applies per page: the watcher bounds it by the operation's
-        remaining deadline so a stalled page cannot hold the operation open."""
-        if search is not None and len(search) < MIN_SEARCH_CHARS:
-            raise ValueError(f"search needs at least {MIN_SEARCH_CHARS} characters")
-        query = "?limit=50"
-        if search is not None:
-            query += f"&search={search}"
-        if connected is not None:
-            query += f"&connected={'true' if connected else 'false'}"
+    def list_connectors(self, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
+        """Every page of the session's toolkit list, each typed whole. ``timeout`` applies per page: the
+        watcher bounds it by the operation's remaining deadline so a stalled page cannot hold the
+        operation open."""
         items: list[dict[str, Any]] = []
         cursor: Optional[str] = None
         for _ in range(20):
-            path = f"{wire.CONNECTORS_PATH}{query}"
+            path = f"{wire.CONNECTORS_PATH}?limit=50"
             if cursor:
                 path += f"&cursor={cursor}"
             page = self._parse(wire.ConnectorListResponse, self._request("GET", path, None, timeout=timeout),

@@ -402,14 +402,11 @@ export interface ConnectionOperationTarget {
   /** The vendor account a managed mint created or observed; never the desktop transport's connection id. */
   connection_id?: string
   detail?: string
-  /** From the toolkit list, on connector targets only; an MCP target has neither. */
-  icon_url?: string
   kind: ConnectionTargetKind
   name: string
   /** On an MCP install that is waiting for credentials; absent on every other target. */
   required_env?: ConnectionTargetEnvField[]
   state: ConnectionTargetState
-  title?: string
   tools?: string[]
 }
 

@@ -92,17 +92,7 @@ def _status_for(target: Target, status_by_slug: Dict[str, Dict[str, Any]]) -> Op
         "connected": bool(row.get("connected")),
         "status": str(row.get("connectionStatus") or "").lower(),
         "reason": str(row.get("statusReason") or ""),
-        "connection_id": row.get("activeConnectionId"),
     }
-
-
-def _decorate(operation: ConnectionOperation, status_by_slug: Dict[str, Dict[str, Any]]) -> None:
-    """Copy the toolkit's title and icon onto each target before the card is emitted."""
-    for target in operation.targets:
-        row = status_by_slug.get(target.name)
-        if row is not None:
-            target.title = str(row.get("title") or "")
-            target.icon_url = str(row.get("iconUrl") or "")
 
 
 # A page read never outlives the operation, and never asks for less than one second.
@@ -130,8 +120,7 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
         if row["connected"]:
             if target.state == TargetState.pending:
                 operation.transition(target.name, TargetState.initiated, Actor.backend_watcher)
-            operation.transition(target.name, TargetState.connected, Actor.backend_watcher,
-                                 connection_id=row["connection_id"] or target.connection_id)
+            operation.transition(target.name, TargetState.connected, Actor.backend_watcher)
             continue
         terminal = _TERMINAL_LIST_STATUS.get(row["status"])
         if terminal is not None and target.state == TargetState.initiated:
@@ -140,15 +129,9 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
             operation.transition(target.name, terminal, actor, detail=target.detail or row["reason"])
 
 
-def _prepare(client: Any, action: str, force: bool, *, card: bool) -> Callable[[ConnectionOperation], None]:
+def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOperation], None]:
     def prepare(operation: ConnectionOperation) -> None:
         names = [t.name for t in operation.targets]
-        # With a card, one list read before the mint: the card draws the toolkit's title and icon from
-        # it, and the watcher reads the same page on its first tick anyway. Off the desktop the result
-        # names slugs only, so a plain connect stays one call.
-        status = _status_by_slug(client) if card or (action != "connect" and not force) else {}
-        if card:
-            _decorate(operation, status)
         if action == "connect":
             mint(client, operation, names, reinitiate=False, actor=Actor.backend_watcher)
             return
@@ -158,6 +141,7 @@ def _prepare(client: Any, action: str, force: bool, *, card: bool) -> Callable[[
                 if target.state == TargetState.initiated:
                     target.awaiting_new_attempt = True
             return
+        status = _status_by_slug(client)
         repair = []
         for name in names:
             if status.get(name, {}).get("connected"):
@@ -172,7 +156,7 @@ def _prepare(client: Any, action: str, force: bool, *, card: bool) -> Callable[[
 
 def _off_desktop_result(client: Any, action: str, names: List[str], force: bool, session_id: str) -> str:
     operation = ConnectionOperation([Target(n, "connector", action) for n in names], session_key=session_id)
-    _prepare(client, action, force, card=False)(operation)
+    _prepare(client, action, force)(operation)
     payload = operation.result(with_urls=True)
     payload["status"] = "initiated" if any(t.state == TargetState.initiated for t in operation.targets) else "settled"
     payload["note"] = (
@@ -216,7 +200,7 @@ def run_managed_action(
             return _off_desktop_result(client, action, connectors, force, session_key)
         return run_operation(
             [Target(n, "connector", action) for n in connectors],
-            Kind(prepare=_prepare(client, action, force, card=True), observe=lambda op: _observe(client, op), note=NOTE),
+            Kind(prepare=_prepare(client, action, force), observe=lambda op: _observe(client, op), note=NOTE),
             session_key=session_key, tool_call_id=tool_call_id,
             connection_callback=connection_callback, with_urls_in_result=False,
         )
