@@ -1,6 +1,7 @@
-"""MCP targets of ``manage_connections``: catalog validation and the approval leg. The card is
-reached via ``agent.connection_callback`` through the inline executor; registry dispatch has no
-callback and settles targets ``unavailable``."""
+"""MCP connection operations using renderer approval cards.
+
+Calls without an approval callback settle unavailable.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# Renderer outcome → operation state. declined = Not now; error = recoverable, operation stays open.
+# Failed approval remains open; a decline resolves as skipped.
 _OUTCOME_STATES = {
     "installed": CONNECTED, "enabled": CONNECTED, "authorized": CONNECTED, "connected": CONNECTED,
     "declined": SKIPPED, "skipped": SKIPPED,
@@ -53,7 +54,6 @@ def _configured_names() -> List[str]:
 
 
 def validate_mcp_names(action: str, names: List[str]) -> Optional[str]:
-    """install: catalog names only; enable/authorize: configured servers only."""
     try:
         catalog = _catalog_names()
         configured = _configured_names()
@@ -93,7 +93,6 @@ def _unavailable_result(operation: ConnectionOperation) -> str:
 
 
 def _apply_answer(operation: ConnectionOperation, raw: str) -> str:
-    """Apply the renderer's per-target answer; returns the settle reason the target states imply."""
     try:
         answer = json.loads(raw)
     except (TypeError, ValueError):
@@ -109,7 +108,7 @@ def _apply_answer(operation: ConnectionOperation, raw: str) -> str:
             continue
         extra = {k: v for k, v in entry.items() if k in ("tools",)}
         operation.record_target(name, state, str(entry.get("detail") or ""), **extra)
-    # Derived from target state; the renderer's own claim is ignored.
+    # Derive settlement from target states, not the renderer's claim.
     return SETTLED_ALL_RESOLVED if operation.all_resolved else SETTLED_CONTINUE
 
 
@@ -122,7 +121,6 @@ def run_mcp_operation(
     session_id: Optional[str],
     wait_seconds: Optional[float] = None,
 ) -> str:
-    """One operation for the MCP targets of a call. Returns the tool's JSON string."""
     error = validate_mcp_names(action, names)
     if error:
         return tool_error(error)
@@ -143,7 +141,6 @@ def run_mcp_operation(
     if raw:
         operation.settle(settled_by)
     else:
-        # Empty answer: deadline passed or the turn was interrupted.
         from tools.interrupt import is_interrupted
 
         operation.settle(SETTLED_INTERRUPT if is_interrupted() else SETTLED_DEADLINE)

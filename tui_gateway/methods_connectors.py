@@ -1,9 +1,6 @@
-"""Connector list and connect RPCs for one session.
+"""Session-scoped connector list and connect RPCs.
 
-Both calls run on the RPC pool. Authorization comes from the WebSocket upgrade
-authentication (including legacy local and SSH tokens) and from live transport
-membership; a profile or identity sent by the renderer does not grant it.
-Neither call builds an agent, opens a browser, or waits in a loop.
+Live transport ownership, not renderer-supplied profile or identity, authorizes requests.
 """
 
 import contextvars
@@ -44,8 +41,7 @@ def _connector_rpc(rid, params, action):
     if _session_uses_compute_host(owner):
         return _connector_rpc_error(rid, 5033, "UNSUPPORTED_RUNTIME", "Connectors must be managed on the session's compute host.")
     allowed = {"session_id"} if action == "status" else {"session_id", "connectors", "reconnect"}
-    # Shared-primary routing adds a profile parameter. Authorization comes from the live transport checked
-    # above, so this parameter is accepted and unused.
+    # ``profile`` is routing metadata, never authorization.
     allowed.add("profile")
     if set(params) - allowed:
         return _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "unsupported connector parameters")
@@ -61,8 +57,7 @@ def _connector_rpc(rid, params, action):
     profile_home = owner.get("profile_home")
     runtime_token = _current_runtime_session_record.set(owner)
     try:
-        # Bind launch explicitly too: an ambient sibling-profile override must not
-        # leak into a session whose profile_home=None means the launch profile.
+        # Bind the launch profile to prevent ambient sibling-profile leakage.
         scope = {"profile_home": profile_home or str(_hermes_home)}
         with _session_profile_runtime_scope(scope):
             tokens = _set_session_context(owner["session_key"], cwd=_session_cwd(owner), ui_session_id=sid)
@@ -74,7 +69,7 @@ def _connector_rpc(rid, params, action):
             return _connector_rpc_error(rid, 4001, "NOT_OWNER", "session ownership changed")
         return result
     except Exception:
-        # Do not send exception strings: HTTP errors can contain headers/tokens.
+        # Do not expose exception strings: HTTP errors can contain credentials.
         return _connector_rpc_error(rid, 5034, "CONNECTOR_REQUEST_FAILED", "Connector request failed. Try again explicitly.")
     finally:
         _current_runtime_session_record.reset(runtime_token)
@@ -86,8 +81,6 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
     from tui_gateway.connector_payload import connector_ui_payload
 
     agent = owner.get("agent")
-    # A cold session has no cached grant yet. Resolve exactly as _make_agent
-    # does, under that session's profile/cwd, without constructing an LLM.
     enabled = (agent.enabled_toolsets if agent is not None
                else _load_enabled_toolsets(_resolve_agent_platform(_session_source(owner))))
     disabled = agent.disabled_toolsets if agent is not None else None
@@ -119,13 +112,11 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
 
 @method("connectors.list")
 def _(rid, params):
-    """{session_id} -> {available, connectors}; unknown fields in the connector metadata are passed through."""
     return _connector_rpc(rid, params, "status")
 
 
 @method("connectors.connect")
 def _(rid, params):
-    """{session_id, connectors, reconnect?} -> manage_connections' results/summary."""
     return _connector_rpc(rid, params, "connect")
 
 

@@ -3,8 +3,6 @@ import { atom, computed } from 'nanostores'
 
 import { $gateway } from './gateway'
 
-/** Pending `connection.request`s, keyed by runtime session id. The backend owns `opId`,
- *  targets and `deadlineAt`; the renderer never recomputes them. */
 export type ConnectionTargetKind = 'connector' | 'mcp'
 export type ConnectionAction = 'authorize' | 'enable' | 'install'
 
@@ -14,12 +12,12 @@ export interface ConnectionTarget {
   action: ConnectionAction
 }
 
+/** Backend-owned operation data; renderer must not recompute targets or deadline. */
 export interface ConnectionRequest {
   requestId: string
   opId: string
-  /** Unix seconds, server-owned. */
+  /** Unix seconds; backend-owned. */
   deadlineAt: number
-  /** One sentence from the agent, shown on the card. */
   reason: string
   targets: ConnectionTarget[]
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
@@ -27,21 +25,19 @@ export interface ConnectionRequest {
   sessionId: string | null
 }
 
-/** One target's answer. `declined` = Not now; `error` = recoverable failure. */
+/** `declined` is a user deferral; `error` is recoverable. */
 export type ConnectionTargetStatus = 'authorized' | 'declined' | 'enabled' | 'error' | 'installed'
 
 export interface ConnectionTargetOutcome {
   name: string
   status: ConnectionTargetStatus
   detail?: string
-  /** Tool names now available (OAuth flows report them). */
   tools?: string[]
 }
 
-/** The card's answer, serialized back through `connection.respond`. */
 export interface ConnectionOutcome {
   targets: ConnectionTargetOutcome[]
-  /** Advisory only; the backend derives the settle reason from target states. */
+  /** The backend derives the settle reason from target states. */
   settled_by?: 'all_resolved' | 'continue'
 }
 
@@ -49,13 +45,12 @@ const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
 export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 
-/** One session's pending request (same shape as `sessionClarifyRequest`). */
 export const sessionConnectionRequest = (sessionId: string | null) =>
   computed($connectionRequests, requests => requests[keyFor(sessionId)] ?? null)
 
 const ACTIONS: readonly ConnectionAction[] = ['install', 'enable', 'authorize']
 
-/** The wire shape of `connection.request` and the `pending_connection` resume field. */
+/** Mirrors `connection.request` and the `pending_connection` resume field. */
 export interface ConnectionRequestWire {
   request_id?: string
   op_id?: string
@@ -66,7 +61,6 @@ export interface ConnectionRequestWire {
 
 const str = (value: string | undefined): string => value ?? ''
 
-/** Validate a wire payload. Null when it carries no usable operation (no request id, no targets). */
 export function normalizeConnectionRequest(
   payload: ConnectionRequestWire | null | undefined,
   sessionId: string | null
@@ -85,7 +79,7 @@ export function normalizeConnectionRequest(
       return []
     }
 
-    // SAFETY: isRecord narrowed to an object; each field is re-checked against its allowed values below.
+    // SAFETY: isRecord excludes arrays and primitives; fields are validated below.
     const t = entry as { action?: unknown; kind?: unknown; name?: unknown }
     const name = String(t.name ?? '').trim()
     const action = ACTIONS.find(a => a === t.action) ?? 'install'
@@ -146,12 +140,11 @@ export function clearConnectionRequest(requestId?: string, sessionId?: string | 
   }
 }
 
-/** Non-reactive read for the composer's Enter handler. */
+/** The composer's Enter handler reads this without subscribing. */
 export const hasConnectionRequest = (sessionId: string | null | undefined): boolean =>
   Boolean($connectionRequests.get()[keyFor(sessionId)])
 
-/** Send the card's answer. Clears the entry first so the card cannot be answered twice;
- *  false when the request is already gone. */
+// Clear first so the card cannot be answered twice.
 export async function respondToConnectionRequest(request: ConnectionRequest, outcome: ConnectionOutcome): Promise<boolean> {
   const current = $connectionRequests.get()[keyFor(request.sessionId)]
 
@@ -169,8 +162,7 @@ export async function respondToConnectionRequest(request: ConnectionRequest, out
   return true
 }
 
-/** Typing a message while the card is open declines every target, otherwise the typed
- *  message would wait behind the blocked tool until the deadline. */
+// Decline before sending: the tool blocks the typed message until its deadline.
 export async function skipConnectionRequest(sessionId: string | null | undefined): Promise<boolean> {
   const request = $connectionRequests.get()[keyFor(sessionId)]
 
@@ -184,7 +176,7 @@ export async function skipConnectionRequest(sessionId: string | null | undefined
       targets: request.targets.map(target => ({ name: target.name, status: 'declined' }))
     })
   } catch {
-    // A failed skip must not block the message being sent; the tool settles on its deadline.
+    // A failed skip must not block the message; the tool settles at its deadline.
   }
 
   return true

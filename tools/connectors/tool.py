@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""Manage remote connector accounts served through the tool gateway.
+"""Connection lifecycle tool for managed gateway accounts and local MCP servers.
 
-``manage_connections`` is the never-deferred surface for connection
-lifecycle:
-
-- ``status`` — which connectors exist for this account and whether each is
-  connected (read-only).
-- ``connect`` / ``reconnect`` — start (or restart) an authorization flow.
-  The gateway returns a connect link, passed through UN-redacted: the model
-  shows it to the user, who opens it in a browser. Each connector's
-  ``instruction`` text is surfaced once per session, not on every call.
-- ``wait`` — block inside the call until the named connectors report
-  connected, or the budget runs out. A model has no clock: told to wait it
-  says "I'll check back in a minute" and its next action lands immediately,
-  so guidance produced a burst of polls rather than a paced one. Waiting
-  inside the call cannot be skipped and works the same on every platform.
-
-Scope: managed connectors AND local MCP servers. ``{"name": ..., "mcp": true}`` targets take
-``install`` / ``enable`` / ``authorize`` through one connection operation (``operation.py``,
-``mcp.py``); the approval card is reached only via the inline executor, so non-GUI surfaces get
-``unavailable`` for MCP targets. Managed actions live in ``managed.py``; target and action
-validation in ``targets.py``.
-
-De-authentication is deliberately NOT exposed to the model: disconnecting
-an account is a user decision, made in the portal dashboard.
-
-Availability: the managed leg is portal-gated in the handler; MCP targets need no sign-in.
+Disconnecting accounts remains a portal-only user decision.
 """
 
 from typing import Any, Callable, Dict, Optional
@@ -54,7 +30,6 @@ def manage_connections(
     connectors_available: Optional[Callable[[], bool]] = None,
     wait_seconds: Optional[float] = None,
 ) -> str:
-    """Dispatch one ``manage_connections`` action. Returns a JSON string."""
     action = str(args.get("action") or "status").strip().lower()
     managed, mcp_targets, target_error = normalize_targets(args.get("connectors"))
     if target_error:
@@ -165,9 +140,8 @@ registry.register(
     name="manage_connections",
     toolset="connections",
     schema=MANAGE_CONNECTIONS_SCHEMA,
-    # The portal gate is in the handler, not check_fn, so signed-out sessions keep the tool for
-    # MCP approvals. The registry path has no GUI callback. Module attribute, not a bound name, so
-    # tests patch ``gateway.config.connectors_available`` once and every reader sees it.
+    # Keep the portal gate in the handler so signed-out sessions retain MCP approvals.
+    # Read the module attribute so tests patch ``gateway.config.connectors_available`` at one seam.
     handler=lambda args, **kw: manage_connections(
         args, session_id=kw.get("session_id"), connectors_available=gateway_config.connectors_available,
     ),

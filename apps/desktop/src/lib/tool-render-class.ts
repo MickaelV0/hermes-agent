@@ -29,8 +29,8 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `clarify`, `image_generate` and `delegate_task` bypass ToolEntry to
 //     render their own markup: a question the user has to answer, an image
 //     they asked for, the several agents a fan-out is running.
-//   - `manage_connections` is a consent card (MCP always, managed under the onboarding
-//     gate). Folding it into a "Using 2 tools" summary hides the buttons.
+//   - `manage_connections` is a consent card (MCP always, managed only during
+//     onboarding); its controls must stay visible.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.

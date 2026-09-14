@@ -1,5 +1,4 @@
-"""One backend-owned connection operation per ``manage_connections`` call: targets, a
-server-set deadline, exactly-once settlement. Pure data, no I/O."""
+"""Backend-owned connection state with deadlines and exactly-once settlement."""
 
 from __future__ import annotations
 
@@ -9,21 +8,18 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-# config.yaml ``connections.wait_timeout_seconds``; floor only, no ceiling.
 WAIT_TIMEOUT_DEFAULT_SECONDS = 120.0
 WAIT_TIMEOUT_FLOOR_SECONDS = 5.0
 
-# Target states. connected/skipped/unavailable are resolved; failed keeps the operation open.
+# ``failed`` remains unresolved so the operation stays open.
 PENDING = "pending"
 CONNECTED = "connected"
 SKIPPED = "skipped"
 FAILED = "failed"
 UNAVAILABLE = "unavailable"
-# Stamped on unresolved targets at settlement; ``detail`` carries the settle reason.
 NOT_CONNECTED = "not_connected"
 RESOLVED_STATES = frozenset({CONNECTED, SKIPPED, UNAVAILABLE})
 
-# How an operation settled.
 SETTLED_ALL_RESOLVED = "all_resolved"
 SETTLED_CONTINUE = "continue"
 SETTLED_DEADLINE = "deadline"
@@ -32,8 +28,7 @@ SETTLED_UNAVAILABLE = "unavailable"
 
 
 def resolve_wait_timeout(config: Optional[Dict[str, Any]] = None) -> float:
-    """``connections.wait_timeout_seconds`` from config.yaml, floored, default 120. Reads only
-    that key; the executor and clarify budgets never proxy for it."""
+    """Read only ``connections.wait_timeout_seconds``; executor budgets must not proxy it."""
     if config is None:
         try:
             from hermes_cli.config import load_config_readonly
@@ -47,7 +42,7 @@ def resolve_wait_timeout(config: Optional[Dict[str, Any]] = None) -> float:
         value = WAIT_TIMEOUT_DEFAULT_SECONDS if raw is None or isinstance(raw, bool) else float(raw)
     except (TypeError, ValueError):
         value = WAIT_TIMEOUT_DEFAULT_SECONDS
-    if value != value:  # NaN
+    if value != value:
         value = WAIT_TIMEOUT_DEFAULT_SECONDS
     return max(WAIT_TIMEOUT_FLOOR_SECONDS, value)
 
@@ -55,11 +50,10 @@ def resolve_wait_timeout(config: Optional[Dict[str, Any]] = None) -> float:
 @dataclass
 class Target:
     name: str
-    kind: str  # "mcp" | "connector"
+    kind: str
     action: str
     state: str = PENDING
     detail: str = ""
-    # Renderer-reported fields passed through to the model (e.g. ``tools`` after OAuth).
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -91,14 +85,11 @@ class ConnectionOperation:
         if not self.deadline_at:
             self.deadline_at = self.created_at + float(self.wait_seconds)
 
-    # -- targets -------------------------------------------------------------
-
     def target(self, name: str) -> Optional[Target]:
         return next((t for t in self.targets if t.name == name), None)
 
     def record_target(self, name: str, state: str, detail: str = "", **extra: Any) -> bool:
-        """Update a target's live state; False for an unknown name. Allowed after settlement:
-        the frozen ``result()`` does not change."""
+        """Update live state without changing a frozen result."""
         target = self.target(name)
         if target is None:
             return False
@@ -119,16 +110,14 @@ class ConnectionOperation:
     def remaining_seconds(self, now: Optional[float] = None) -> float:
         return max(0.0, self.deadline_at - (time.time() if now is None else now))
 
-    # -- settlement ----------------------------------------------------------
-
     def settle(self, by: str, now: Optional[float] = None) -> bool:
-        """Compare-and-set: first caller freezes the result, later callers get False."""
+        """Freeze the result once; later calls return ``False``."""
         with self._lock:
             if self.settled_at is not None:
                 return False
             self.settled_at = time.time() if now is None else now
             self.settled_by = by
-            # Unresolved targets become not_connected so the settled card shows no pending row.
+            # A settled card must not expose pending targets.
             for target in self.targets:
                 if not target.resolved:
                     reason = target.detail or by
@@ -150,14 +139,13 @@ class ConnectionOperation:
         }
 
     def result(self) -> Dict[str, Any]:
-        """The settled result (frozen at settle time), or the live snapshot before settlement."""
+        """Return the frozen settled result or a live snapshot."""
         with self._lock:
             if self._settled_snapshot is not None:
                 return dict(self._settled_snapshot, targets=[dict(t) for t in self._settled_snapshot["targets"]])
             return self._snapshot_locked()
 
     def request_payload(self, reason: str = "") -> Dict[str, Any]:
-        """The ``connection.request`` payload: identity, targets, server-owned deadline."""
         return {
             "op_id": self.op_id,
             "deadline_at": self.deadline_at,

@@ -359,7 +359,7 @@ export interface VaultCodeRequestPayload {
   site?: string
 }
 
-/** `manage_connections` MCP approval card (`tui_gateway/agent_callbacks.py::connection_callback`). */
+/** Mirrors `tui_gateway/agent_callbacks.py::connection_callback`. */
 export interface ConnectionRequestPayload {
   deadline_at: number
   op_id: string

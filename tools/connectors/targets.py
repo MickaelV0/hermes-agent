@@ -1,9 +1,4 @@
-"""Target and action validation shared by every leg of ``manage_connections``.
-
-``connectors`` entries are bare slugs or ``{name, mcp}`` objects; bare strings and ``{name}`` are
-managed connectors, ``{name, mcp: true}`` is a local MCP server. Connector verbs need managed
-targets, MCP verbs need MCP targets. Pure functions, no I/O.
-"""
+"""Target normalization and action validation for ``manage_connections``."""
 
 from __future__ import annotations
 
@@ -17,8 +12,6 @@ _TARGET_FIELDS = frozenset({"name", "mcp"})
 
 
 def normalize_targets(raw: Any) -> Tuple[List[str], List[str], Optional[str]]:
-    """``connectors`` → ``(managed names, mcp names, error)``. Bare strings and ``{name}`` are
-    managed; ``{name, mcp: true}`` is a local MCP. Any other field is an error."""
     if raw is None:
         return [], [], None
     if isinstance(raw, (str, dict)):
@@ -49,7 +42,6 @@ def normalize_targets(raw: Any) -> Tuple[List[str], List[str], Optional[str]]:
 
 
 def validate_action(action: str, managed: List[str], mcp: List[str]) -> Optional[str]:
-    """MCP verbs need ``mcp:true`` targets; connector verbs need managed targets."""
     if action not in ALL_ACTIONS:
         return (
             f"action must be one of {', '.join(ALL_ACTIONS)}. "
