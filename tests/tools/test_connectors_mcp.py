@@ -39,7 +39,8 @@ def _clean_live():
 @pytest.fixture(autouse=True)
 def _catalog():
     with patch("tools.connectors.mcp._catalog_names", return_value=CATALOG), \
-         patch("tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)):
+         patch("tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)), \
+         patch("tools.connectors.mcp.session_platform", return_value="desktop"):
         yield
 
 
@@ -67,6 +68,16 @@ def _linear(**kw):
 
 def test_mcp_targets_without_a_callback_settle_unavailable_with_the_terminal_hint():
     out = json.loads(manage_connections({"action": "install", "connectors": [_linear()]}))
+    assert out["status"] == "unavailable"
+
+
+def test_mcp_targets_off_the_desktop_settle_unavailable_even_with_a_callback():
+    """The Ink TUI has the gateway callback attached but no card; the surface decides, never the callback."""
+    callback = _answering(None)
+    with patch("tools.connectors.mcp.session_platform", return_value="tui"), \
+         patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 5):
+        out = _mcp({"action": "install", "connectors": [_linear()]}, callback)
+    assert callback.seen == []
     assert out["status"] == "unavailable"
     assert out["settled_by"] == SettleReason.unavailable.value
     (target,) = out["targets"]

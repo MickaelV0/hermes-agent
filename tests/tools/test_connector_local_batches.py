@@ -42,6 +42,11 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     from tools.connectors.mcp import apply_answer
     from tools.todo_tool import TodoStore
 
+    from gateway.session_context import reset_session_vars, set_session_vars
+
+    # A desktop session: the MCP card exists only there.
+    set_session_vars(source="desktop", session_key="current-session", session_id="current-session")
+
     db = SessionDB(tmp_path / "recall.db")
     db.create_session("past-session", source="cli")
     db.append_message("past-session", role="user", content="live-db-proof")
@@ -89,3 +94,4 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
         assert [(c["tool_call_id"], [t["name"] for t in c["targets"]]) for c in callbacks] == [("call", ["linear"])]
     finally:
         db.close()
+        reset_session_vars()
