@@ -20,8 +20,7 @@ import { $gateway } from './gateway'
 const WIRE = {
   deadline_at: 1_800_000_000,
   op_id: 'op-1',
-  reason: 'inbox',
-  request_id: 'req-1',
+  tool_call_id: 'call-1',
   targets: [
     { action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const },
     { action: 'connect' as const, kind: 'connector' as const, name: 'notion', state: 'pending' as const }
@@ -79,10 +78,14 @@ describe('connection-request store', () => {
     expect(parsed?.settled).toBe(false)
   })
 
-  it('accepts a resume snapshot with no request id', () => {
-    const { request_id: _omitted, ...snapshot } = WIRE
+  it('binds to the model tool call that opened the operation, on a live request and on resume', () => {
+    expect(normalizeConnectionRequest(WIRE, 's1')?.toolCallId).toBe('call-1')
+  })
 
-    expect(normalizeConnectionRequest(snapshot, 's1')?.requestId).toBeNull()
+  it('rejects a payload with no tool call id: a card that cannot name its row has no row to live on', () => {
+    const { tool_call_id: _omitted, ...snapshot } = WIRE
+
+    expect(normalizeConnectionRequest(snapshot, 's1')).toBeNull()
   })
 
   it('rejects a payload with no targets, no op id or no deadline', () => {

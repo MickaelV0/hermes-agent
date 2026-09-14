@@ -18,6 +18,7 @@ def manage_connections(
     *,
     client_factory: Optional[Callable[[], Any]] = None,
     session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
     connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
 ) -> str:
@@ -31,13 +32,13 @@ def manage_connections(
 
     if action in MCP_ACTIONS:
         return run_mcp_operation(
-            mcp_targets, action, str(args.get("reason") or "").strip(),
-            connection_callback=connection_callback, session_id=session_id,
+            mcp_targets, action,
+            connection_callback=connection_callback, session_id=session_id, tool_call_id=tool_call_id,
         )
 
     return run_managed_action(
         action, managed, args,
-        client_factory=client_factory, session_id=session_id,
+        client_factory=client_factory, session_id=session_id, tool_call_id=tool_call_id,
         connection_callback=connection_callback, connectors_available=connectors_available,
     )
 
@@ -96,10 +97,6 @@ MANAGE_CONNECTIONS_SCHEMA = {
                     "Targets. REQUIRED for every action but status "
                     "(e.g. [\"gmail\", {\"name\": \"linear\", \"mcp\": true}]); optional filter for status."
                 ),
-            },
-            "reason": {
-                "type": "string",
-                "description": "One sentence shown on the card: why this helps right now.",
             },
             "force": {
                 "type": "boolean",

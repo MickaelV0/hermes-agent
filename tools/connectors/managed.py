@@ -128,6 +128,7 @@ def run_managed_action(
     *,
     client_factory: Optional[Callable[[], Any]] = None,
     session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
     connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
 ) -> str:
@@ -155,7 +156,7 @@ def run_managed_action(
         return run_operation(
             [Target(n, "connector", action) for n in connectors],
             Kind(prepare=_prepare(client, action, force), observe=lambda op: _observe(client, op), note=NOTE),
-            session_key=session_key, reason=str(args.get("reason") or ""),
+            session_key=session_key, tool_call_id=tool_call_id,
             connection_callback=connection_callback, with_urls_in_result=False,
         )
     except Exception as exc:

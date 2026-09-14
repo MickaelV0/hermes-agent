@@ -111,10 +111,10 @@ def _unavailable(operation: ConnectionOperation) -> str:
 def run_mcp_operation(
     names: List[str],
     action: str,
-    reason: str,
     *,
     connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]],
     session_id: Optional[str],
+    tool_call_id: Optional[str] = None,
 ) -> str:
     error = validate_mcp_names(action, names)
     if error:
@@ -127,6 +127,6 @@ def run_mcp_operation(
 
     return run_operation(
         targets, Kind(prepare=prepare, observe=lambda op: None, note=NOTE),
-        session_key=str(session_id or ""), reason=reason, connection_callback=connection_callback,
+        session_key=str(session_id or ""), tool_call_id=tool_call_id, connection_callback=connection_callback,
         with_urls_in_result=False,
     )

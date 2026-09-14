@@ -54,6 +54,8 @@ class ConnectionOperation:
 
     targets: List[Target]
     session_key: str = ""
+    # The model's id for the call that opened the operation; the card binds to that tool row only.
+    tool_call_id: Optional[str] = None
     op_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
     deadline_at: float = 0.0
@@ -155,15 +157,17 @@ class ConnectionOperation:
                 return dict(self._settled_snapshot, targets=targets)
             return self._snapshot_locked(with_urls=with_urls)
 
-    def request_payload(self, reason: str = "") -> Dict[str, Any]:
-        """The ``connection.request`` payload: identity, live target snapshots (links included, the
-        panel owns them), server-owned deadline."""
+    def request_payload(self) -> Dict[str, Any]:
+        """The ``connection.request`` payload and the resume snapshot: identity, live target snapshots
+        (links included, the panel owns them), server-owned deadline."""
         with self._lock:
             targets = [t.snapshot() for t in self.targets]
-        return {
+        payload: Dict[str, Any] = {
             "op_id": self.op_id,
             "deadline_at": self.deadline_at,
             "timeout_seconds": OPERATION_DEADLINE_SECONDS,
-            "reason": reason or "",
             "targets": targets,
         }
+        if self.tool_call_id:
+            payload["tool_call_id"] = self.tool_call_id
+        return payload

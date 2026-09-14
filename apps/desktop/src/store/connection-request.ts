@@ -29,12 +29,11 @@ export interface ConnectionTarget {
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
  *  `settledBy` are backend-owned; the renderer holds a cache and drives it through `connection.respond`. */
 export interface ConnectionRequest {
-  /** Present when the card was raised by a `connection.request` event; absent on a resume snapshot. */
-  requestId: null | string
+  /** The model's tool call that opened the operation. The card lives on that row and no other. */
+  toolCallId: string
   opId: string
   /** Unix seconds; backend-owned. */
   deadlineAt: number
-  reason: string
   targets: ConnectionTarget[]
   settled: boolean
   settledBy: ConnectionSettleReason | null
@@ -117,20 +116,19 @@ export function normalizeConnectionRequest(
 
   const targets = payload.targets.map(parseTarget).filter((target): target is ConnectionTarget => target !== null)
 
-  if (!payload.op_id || !(payload.deadline_at > 0) || targets.length === 0) {
+  if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || targets.length === 0) {
     return null
   }
 
   return {
     deadlineAt: payload.deadline_at,
     opId: payload.op_id,
-    reason: payload.reason ?? '',
     receivedAt: Date.now() / 1000,
-    requestId: payload.request_id ?? null,
     sessionId,
     settled: false,
     settledBy: null,
-    targets
+    targets,
+    toolCallId: payload.tool_call_id
   }
 }
 

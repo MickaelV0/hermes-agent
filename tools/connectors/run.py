@@ -37,13 +37,13 @@ def run_operation(
     kind: Kind,
     *,
     session_key: str,
-    reason: str,
+    tool_call_id: Optional[str],
     connection_callback: Optional[Callback],
     tick_seconds: Optional[float] = None,
     with_urls_in_result: bool,
 ) -> str:
     """Block the tool thread until the operation settles; return the tool's JSON string."""
-    operation = ConnectionOperation(targets, session_key=session_key)
+    operation = ConnectionOperation(targets, session_key=session_key, tool_call_id=tool_call_id)
     try:
         live.open(operation)
     except live.OperationAlreadyOpen as exc:
@@ -56,7 +56,7 @@ def run_operation(
     try:
         kind.prepare(operation)
         if connection_callback is not None and not operation.settled:
-            connection_callback(operation.request_payload(reason))
+            connection_callback(operation.request_payload())
         _watch(operation, kind, tick_seconds)
     finally:
         live.close(operation)

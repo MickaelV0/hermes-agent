@@ -59,15 +59,9 @@ function matchingTargetNames(left: readonly string[], right: readonly string[]):
   return leftSorted.every((name, index) => name === rightSorted[index])
 }
 
-function partMatchesRequest(props: ToolCallMessagePartProps, request: ConnectionRequest | null): boolean {
-  return Boolean(
-    request &&
-    (request.requestId === null || props.toolCallId === request.requestId) &&
-    matchingTargetNames(
-      requestedConnectorNames(props.args),
-      request.targets.map(target => target.name)
-    )
-  )
+/** The card lives on the tool row whose id opened the operation and on no other. */
+export function connectionRequestOwnsPart(props: ToolCallMessagePartProps, request: ConnectionRequest | null): boolean {
+  return Boolean(request && props.toolCallId === request.toolCallId)
 }
 
 export function ConnectorTool(props: ToolCallMessagePartProps) {
@@ -83,7 +77,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
     (recordOf(props.args).action ?? 'status') === 'status' &&
     targetNames.length === 0
 
-  const live = !untargetedStatus && partMatchesRequest(props, request)
+  const live = !untargetedStatus && connectionRequestOwnsPart(props, request)
   // Owner routes and hints are keyed by the stored id, not the runtime id the events carry.
   const ownerSessionId = storedId
   const [owner, setOwner] = useState<ConnectorOwner | null>(null)

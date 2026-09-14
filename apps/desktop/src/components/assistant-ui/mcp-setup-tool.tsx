@@ -35,7 +35,6 @@ type SetupAction = 'authorize' | 'enable' | 'install'
 interface SetupArgs {
   server: string
   action: SetupAction
-  reason: string
 }
 
 const CATALOG_INSTALL_POLL_MS = 1500
@@ -49,7 +48,6 @@ function readSetupArgs(args: unknown): SetupArgs {
 
   return {
     action: target?.action ?? 'install',
-    reason: typeof row.reason === 'string' ? row.reason : '',
     server: target?.name ?? ''
   }
 }
@@ -183,7 +181,6 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
   const [requestTarget] = request?.targets ?? []
   const server = fromArgs.server || requestTarget?.name || ''
   const action: SetupAction = fromArgs.action ?? requestTarget?.action ?? 'install'
-  const reason = fromArgs.reason || request?.reason || ''
 
   const [working, setWorking] = useState(false)
   const [envDraft, setEnvDraft] = useState<Record<string, string>>({})
@@ -379,7 +376,6 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       accelerators
       busy={working}
       connector={{
-        description: reason || undefined,
         name: server,
         requiredEnv: entry?.required_env,
         title: displayName

@@ -4,7 +4,7 @@ import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
-import { ConnectorOffer, ConnectorTool } from '@/components/assistant-ui/connector-tool'
+import { connectionRequestOwnsPart, ConnectorOffer, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { I18nProvider } from '@/i18n'
 import { $connectionRequests, type ConnectionRequest, setConnectionRequest } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
@@ -16,8 +16,7 @@ const OWNER = { connectionId: 'connection-1', profile: 'default' }
 const REQUEST: ConnectionRequest = {
   deadlineAt: 1_800_000_000,
   opId: 'operation-1',
-  reason: 'Use Gmail',
-  requestId: 'connector-call-1',
+  toolCallId: 'connector-call-1',
   sessionId: SESSION_ID,
   settled: false,
   settledBy: null,
@@ -151,6 +150,13 @@ describe('ConnectorTool operation card', () => {
         session_id: SESSION_ID
       })
     })
+  })
+
+  it('never binds to a tool row from a different call, even for the same apps', () => {
+    // A second connect for gmail opens a new operation on a new tool_call_id. The old row must stay
+    // dead: it is matched by id only, never by connector names.
+    expect(connectionRequestOwnsPart(props(), { ...REQUEST, opId: 'operation-2', toolCallId: 'connector-call-2' })).toBe(false)
+    expect(connectionRequestOwnsPart(props(), REQUEST)).toBe(true)
   })
 
   it('renders settled operations with no live controls', () => {

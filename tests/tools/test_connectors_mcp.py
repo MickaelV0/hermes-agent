@@ -162,9 +162,9 @@ def test_callback_answer_folds_into_the_operation_and_settles_once():
         {"name": "linear", "status": "installed", "tools": ["a", "b"]},
         {"name": "figma", "status": "declined"},
     ]}))
-    out = _mcp({"action": "install", "connectors": [_linear(), {"name": "figma", "mcp": True}], "reason": "tickets"}, callback)
+    out = _mcp({"action": "install", "connectors": [_linear(), {"name": "figma", "mcp": True}]}, callback)
     (payload,) = callback.seen
-    assert payload["reason"] == "tickets"
+    assert "reason" not in payload
     assert [t["name"] for t in payload["targets"]] == ["linear", "figma"]
     assert payload["timeout_seconds"] == op.OPERATION_DEADLINE_SECONDS
     assert out["status"] == "settled" and out["settled_by"] == SettleReason.all_resolved.value
@@ -214,10 +214,10 @@ def test_setup_mcp_replay_shim_translates_to_an_mcp_target():
     callback = _answering(json.dumps({"targets": [{"name": "linear", "status": "declined"}]}))
     with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         out = json.loads(INLINE_TOOL_EXECUTORS["setup_mcp"](
-            _agent(callback), {"server": "linear", "action": "install", "reason": "old convo"}, InlineToolContext("task")))
+            _agent(callback), {"server": "linear", "action": "install", "reason": "old convo"}, InlineToolContext("task", tool_call_id="call-9")))
     (target,) = callback.seen[0]["targets"]
     assert (target["name"], target["kind"], target["action"], target["state"]) == ("linear", "mcp", "install", "pending")
-    assert callback.seen[0]["reason"] == "old convo"
+    assert callback.seen[0]["tool_call_id"] == "call-9"
     assert out["targets"][0]["state"] == TargetState.skipped.value
 
 

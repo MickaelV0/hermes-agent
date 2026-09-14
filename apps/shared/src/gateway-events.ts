@@ -375,15 +375,15 @@ export type ConnectionActor = 'backend_watcher' | 'clock' | 'renderer_flow' | 'u
 export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt' | 'unavailable'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
 
-/** `tools/connectors/operation.py::request_payload`. `request_id` is absent on a resume snapshot. */
+/** `tools/connectors/operation.py::request_payload`, also the `pending_connection` resume snapshot. */
 export interface ConnectionRequestPayload {
   deadline_at: number
   op_id: string
-  reason?: string
-  request_id?: string
   /** Live target snapshots: links minted up front ride here, the model result never sees them. */
   targets: ConnectionOperationTarget[]
   timeout_seconds?: number
+  /** The model's id for the call that opened the operation; the card binds to that tool row only. */
+  tool_call_id?: string
 }
 
 /** One target as `connectors.operation.status` returns it (`tools/connectors/operation.py::Target.snapshot`). */
@@ -459,7 +459,6 @@ export const BACKEND_EVENT_NAMES = [
   'btw.complete',
   'clarify.expire',
   'clarify.request',
-  'connection.expire',
   'connection.request',
   'connection.update',
   'cron.changed',
@@ -557,7 +556,6 @@ export interface BackendGatewayEventMap {
   'btw.complete': SideAgentCompletePayload
   'clarify.expire': RequestExpirePayload
   'clarify.request': ClarifyRequestPayload
-  'connection.expire': RequestExpirePayload
   'connection.request': ConnectionRequestPayload
   'connection.update': ConnectionUpdatePayload
   'cron.changed': Record<string, unknown>

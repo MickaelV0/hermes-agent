@@ -19,8 +19,7 @@ const OWNER = { connectionId: 'connection-1', profile: 'default' }
 const REQUEST: ConnectionRequest = {
   deadlineAt: 1_800_000_000,
   opId: 'operation-1',
-  reason: '',
-  requestId: 'connector-call-1',
+  toolCallId: 'connector-call-1',
   sessionId: SESSION_ID,
   settled: false,
   settledBy: null,
