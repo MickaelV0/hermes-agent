@@ -6,6 +6,7 @@ import {
   connectionRows,
   connectorAuthorizationUrl,
   type ConnectorRow,
+  type ConnectorRowSeed,
   connectorText,
   recordOf
 } from '@/lib/connector-tools'
@@ -16,7 +17,7 @@ export type FirstBuildConnectorPart = Pick<ToolCallMessagePart, 'toolCallId' | '
 // Onboarding's own poller; PR3 (NS-869) moves the guided flow onto the connection operation.
 export type FirstBuildConnectorPhase = 'idle' | 'opening' | 'waiting' | 'connected' | 'timeout' | 'error' | 'skipped'
 
-export interface FirstBuildConnectorRow extends ConnectorRow {
+export interface FirstBuildConnectorRow extends ConnectorRowSeed {
   phase: FirstBuildConnectorPhase
   error?: string
   connectUrl?: string

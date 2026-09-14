@@ -96,11 +96,11 @@ export function ConnectorsCard({ locked }: CardProps) {
                 icon={
                   <ConnectorLogo
                     className="size-7 rounded-full text-sm"
-                    connector={{ name: row.connector, title: row.name || connectorTitle(row.connector) }}
+                    connector={{ iconUrl: row.iconUrl, name: row.connector, title: row.title }}
                   />
                 }
                 key={row.connector}
-                label={row.name || connectorTitle(row.connector)}
+                label={row.title}
                 on={answers.connectors.includes(row.connector)}
                 onToggle={() => toggle(row.connector)}
               />

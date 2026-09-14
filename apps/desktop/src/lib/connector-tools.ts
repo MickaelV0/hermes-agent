@@ -51,29 +51,37 @@ export function mcpTargets(toolName: string, args: ToolCallMessagePart['result']
   })
 }
 
-export type ConnectionStatus = 'active' | 'initiated' | 'failed' | 'expired' | 'revoked' | 'inactive' | 'initializing'
+/** The gateway's six-state account status; `pending` covers the vendor's INITIALIZING and INITIATED. */
+export type ConnectionStatus = 'active' | 'expired' | 'failed' | 'inactive' | 'pending' | 'revoked'
 
-const CONNECTION_STATUSES: readonly ConnectionStatus[] = [
-  'active',
-  'initiated',
-  'failed',
-  'expired',
-  'revoked',
-  'inactive',
-  'initializing'
-]
+const CONNECTION_STATUSES: readonly ConnectionStatus[] = ['active', 'expired', 'failed', 'inactive', 'pending', 'revoked']
 
 const isConnectionStatus = (value: string): value is ConnectionStatus =>
   CONNECTION_STATUSES.some(status => status === value)
 
-/** Display-only; these fields never grant access. */
+export type ConnectorAuthKind = 'api_key' | 'none' | 'oauth' | 'other'
+
+/** One `GET /v1/connectors` item as the gateway sends it. Display-only; these fields never grant access. */
 export interface ConnectorRow {
+  activeConnectionId?: string
+  authKind: ConnectorAuthKind
+  connected: boolean
+  connectionStatus?: ConnectionStatus
+  connector: string
+  description: string
+  disabledTools?: string[]
+  enabled: boolean
+  iconUrl: string
+  statusReason?: string
+  title: string
+}
+
+/** What a tool call's args and result can say about a connector: the slug, and a status when the result carries one. */
+export interface ConnectorRowSeed {
   connector: string
   connected?: boolean
   enabled?: boolean
   connectionStatus?: ConnectionStatus
-  name?: string
-  description?: string
 }
 
 export function connectorText(value: ToolCallMessagePart['result']): string | undefined {
@@ -155,10 +163,10 @@ export function connectorCalls(name: string, args: ToolCallMessagePart['result']
 export function connectionRows(
   args: ToolCallMessagePart['result'],
   result: ToolCallMessagePart['result']
-): ConnectorRow[] {
+): ConnectorRowSeed[] {
   const input = recordOf(args)
   const output = recordOf(result)
-  const rows = new Map<string, ConnectorRow>()
+  const rows = new Map<string, ConnectorRowSeed>()
 
   const add = (item: ToolCallMessagePart['result']) => {
     const slug = connectorText(item)
@@ -178,7 +186,7 @@ export function connectionRows(
       return
     }
 
-    const merged: ConnectorRow = { ...rows.get(connector), connector }
+    const merged: ConnectorRowSeed = { ...rows.get(connector), connector }
 
     if (row.connected === true || row.connected === false) {
       merged.connected = row.connected
@@ -192,14 +200,6 @@ export function connectionRows(
 
     if (connectionStatus && isConnectionStatus(connectionStatus)) {
       merged.connectionStatus = connectionStatus
-    }
-
-    for (const key of ['name', 'description'] as const) {
-      const text = connectorText(row[key])
-
-      if (text !== undefined) {
-        merged[key] = text
-      }
     }
 
     rows.set(connector, merged)

@@ -216,7 +216,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
 
           return (
             <ConnectorSummary
-              connector={{ name: target.name, title: connectorTitle(target.name) }}
+              connector={{ iconUrl: target.iconUrl, name: target.name, title: target.title || connectorTitle(target.name) }}
               key={target.name}
               meta={meta}
               tone={tone}
@@ -256,7 +256,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
           return (
             <ConnectorRow
               action={action}
-              connector={{ name: target.name, title: connectorTitle(target.name) }}
+              connector={{ iconUrl: target.iconUrl, name: target.name, title: target.title || connectorTitle(target.name) }}
               cue={phase.mark === 'waiting' ? copy.waiting : undefined}
               key={target.name}
               mark={phase.mark}

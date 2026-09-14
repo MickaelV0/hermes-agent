@@ -27,7 +27,10 @@ const REQUEST: ConnectionRequest = {
     {
       action: 'connect',
       connectUrl: 'https://connect.example/gmail',
+      connectionId: '',
       detail: '',
+      iconUrl: '',
+      title: '',
       kind: 'connector',
       name: 'gmail',
       state: 'initiated',
@@ -36,7 +39,10 @@ const REQUEST: ConnectionRequest = {
     {
       action: 'connect',
       connectUrl: 'https://connect.example/notion',
+      connectionId: '',
       detail: '',
+      iconUrl: '',
+      title: '',
       kind: 'connector',
       name: 'notion',
       state: 'initiated',

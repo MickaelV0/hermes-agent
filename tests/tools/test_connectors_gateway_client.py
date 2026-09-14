@@ -16,6 +16,7 @@ from tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     IdempotencyConflict,
+    RateLimited,
     ToolGatewayError,
 )
 from tools.connectors.gateway.names import vendor_slug_candidates
@@ -219,6 +220,7 @@ def test_connection_required_stays_inside_the_200_envelope():
                             "message": "connect gmail",
                             "connector": "gmail",
                             "connectUrl": "https://example.test/connect/1",
+                            "connectionId": "ca_1",
                         },
                     }
                 ]
@@ -228,6 +230,7 @@ def test_connection_required_stays_inside_the_200_envelope():
     (result,) = make_client(transport).execute(planned(PLAN_CALLS[:1]))
     assert result["error"]["code"] == "CONNECTION_REQUIRED"
     assert result["error"]["connect_url"] == "https://example.test/connect/1"
+    assert result["error"]["connection_id"] == "ca_1"
 
 
 # ---------------------------------------------------------------------------
@@ -329,3 +332,52 @@ def test_default_resolver_ignores_the_media_host_override():
 
 def test_default_resolver_is_none_on_a_misconfigured_scheme():
     assert _resolve_with_env(TOOL_GATEWAY_SCHEME="ftp") is None
+
+
+# ---------------------------------------------------------------------------
+# contract: list query, execute account, account status route
+# ---------------------------------------------------------------------------
+
+
+LIST_ITEM = {"connector": "gmail", "enabled": True, "connected": False, "disabledTools": [], "title": "Gmail",
+             "description": "Mail", "iconUrl": "https://logos.composio.dev/api/gmail", "authKind": "oauth"}
+
+
+def test_list_search_shorter_than_three_characters_raises_before_any_request():
+    transport = FakeTransport()
+    with pytest.raises(ValueError):
+        make_client(transport).list_connectors(search="gm")
+    assert transport.requests == []
+
+
+def test_list_sends_search_and_connected_and_parses_the_whole_page():
+    transport = FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None, "total": 1}))
+    rows = make_client(transport).list_connectors(search="gmail", connected=False)
+    assert transport.requests[0]["url"].endswith("v1/connectors?limit=50&search=gmail&connected=false")
+    assert rows[0]["title"] == "Gmail" and rows[0]["iconUrl"] == LIST_ITEM["iconUrl"]
+    with pytest.raises(ToolGatewayError):
+        make_client(FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None}))).list_connectors()
+
+
+def test_execute_never_sends_account_until_multi_account_is_on():
+    transport = FakeTransport(FakeResponse(200, execute_envelope([{"data": 1}, {"data": 2}])))
+    make_client(transport).execute(planned())
+    assert all("account" not in call for call in transport.requests[0]["json"]["tools"])
+
+
+def test_account_status_answers_none_on_404_and_rate_limited_on_429():
+    row = {"connectionId": "ca_1", "connector": "gmail", "status": "pending", "label": "gmail_a", "active": False,
+           "createdAt": "2026-09-14T10:00:00.000Z", "updatedAt": "2026-09-14T10:00:00.000Z"}
+    transport = FakeTransport(
+        FakeResponse(200, row),
+        FakeResponse(404, {"error": "connection_not_found"}),
+        FakeResponse(429, {"code": "PROVIDER_RATE_LIMITED", "message": "slow down", "requestId": "r1", "retryAfterMs": 1500}),
+    )
+    client = make_client(transport)
+    assert client.account_status("ca_1")["status"] == "pending"
+    assert transport.requests[0]["url"].endswith("v1/connectors/accounts/ca_1")
+    assert client.account_status("ca_1") is None
+    with pytest.raises(RateLimited) as caught:
+        client.account_status("ca_1")
+    assert caught.value.retry_after == 1.5
+    assert len(transport.requests) == 3  # a 429 is never retried by the client

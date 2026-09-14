@@ -21,9 +21,13 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# Statuses on the gateway list that end an attempt. The list's statusReason is generic copy, so the
-# detail recorded at mint time is kept; only a missing detail is filled from the list.
-_TERMINAL_LIST_STATUS = {"failed": TargetState.failed, "expired": TargetState.expired, "revoked": TargetState.failed}
+# Gateway account statuses that end an attempt (contract: the six-state vocabulary; `pending` and a
+# missing status move nothing). The list's statusReason is generic copy, so the detail recorded at
+# mint time is kept; only a missing detail is filled from the list.
+_TERMINAL_LIST_STATUS = {
+    "failed": TargetState.failed, "expired": TargetState.expired,
+    "revoked": TargetState.failed, "inactive": TargetState.failed,
+}
 
 NOTE = (
     "Settled once. connected → use the app now; skipped → the user chose Not now, do not connect it "
@@ -54,13 +58,15 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
             continue
         status = str(entry.get("status") or "")
         detail = str(entry.get("status_reason") or entry.get("statusReason") or "")
+        connection_id = entry.get("connection_id") or entry.get("connectionId")
         if status == "active":
             operation.transition(name, TargetState.initiated, actor)
-            operation.transition(name, TargetState.connected, Actor.backend_watcher)
+            operation.transition(name, TargetState.connected, Actor.backend_watcher, connection_id=connection_id)
         elif status == "initiated":
             operation.transition(
                 name, TargetState.initiated, actor,
-                connect_url=entry.get("connect_url"), attempt=entry.get("attempt"), detail=detail,
+                connect_url=entry.get("connect_url"), connection_id=connection_id, attempt=entry.get("attempt"),
+                detail=detail,
             )
         elif target.state == TargetState.failed:
             # Failed again: no state change to emit, but the old link is dead and the vendor's text is new.
@@ -75,9 +81,32 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
             operation.transition(name, TargetState.failed, Actor.backend_watcher, detail=detail)
 
 
+def _status_for(target: Target, status_by_slug: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The one seam between the watcher and the gateway's status source. Today it is the list walk;
+    the per-account status route replaces this body and nothing else when the gateway ships it."""
+    row = status_by_slug.get(target.name)
+    if row is None:
+        return None
+    return {
+        "connected": bool(row.get("connected")),
+        "status": str(row.get("connectionStatus") or "").lower(),
+        "reason": str(row.get("statusReason") or ""),
+        "connection_id": row.get("activeConnectionId"),
+    }
+
+
+def _decorate(operation: ConnectionOperation, status_by_slug: Dict[str, Dict[str, Any]]) -> None:
+    """Copy the toolkit's title and icon onto each target before the card is emitted."""
+    for target in operation.targets:
+        row = status_by_slug.get(target.name)
+        if row is not None:
+            target.title = str(row.get("title") or "")
+            target.icon_url = str(row.get("iconUrl") or "")
+
+
 def _observe(client: Any, operation: ConnectionOperation) -> None:
     try:
-        status = _status_by_slug(client)
+        status_by_slug = _status_by_slug(client)
     except Exception as exc:
         logger.debug("connector watch poll failed: %s", exc)
         return
@@ -86,29 +115,35 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
         # link waits for the user, and a settled op is frozen.
         if operation.settled or target.state not in (TargetState.pending, TargetState.initiated):
             continue
-        row = status.get(target.name)
+        row = _status_for(target, status_by_slug)
         if row is None:
             continue
-        row_status = str(row.get("connectionStatus") or "").lower()
         if target.awaiting_new_attempt:
-            if row.get("connected") or row_status == "active":
+            if row["connected"] or row["status"] == "active":
                 continue
             target.awaiting_new_attempt = False
-        if row.get("connected"):
+        if row["connected"]:
             if target.state == TargetState.pending:
                 operation.transition(target.name, TargetState.initiated, Actor.backend_watcher)
-            operation.transition(target.name, TargetState.connected, Actor.backend_watcher)
+            operation.transition(target.name, TargetState.connected, Actor.backend_watcher,
+                                 connection_id=row["connection_id"] or target.connection_id)
             continue
-        terminal = _TERMINAL_LIST_STATUS.get(row_status)
+        terminal = _TERMINAL_LIST_STATUS.get(row["status"])
         if terminal is not None and target.state == TargetState.initiated:
             # `expired` is the link TTL running out; the gateway reports it, the clock caused it.
             actor = Actor.clock if terminal == TargetState.expired else Actor.backend_watcher
-            operation.transition(target.name, terminal, actor, detail=target.detail or str(row.get("statusReason") or ""))
+            operation.transition(target.name, terminal, actor, detail=target.detail or row["reason"])
 
 
-def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOperation], None]:
+def _prepare(client: Any, action: str, force: bool, *, card: bool) -> Callable[[ConnectionOperation], None]:
     def prepare(operation: ConnectionOperation) -> None:
         names = [t.name for t in operation.targets]
+        # With a card, one list read before the mint: the card draws the toolkit's title and icon from
+        # it, and the watcher reads the same page on its first tick anyway. Off the desktop the result
+        # names slugs only, so a plain connect stays one call.
+        status = _status_by_slug(client) if card or (action != "connect" and not force) else {}
+        if card:
+            _decorate(operation, status)
         if action == "connect":
             mint(client, operation, names, reinitiate=False, actor=Actor.backend_watcher)
             return
@@ -118,7 +153,6 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
                 if target.state == TargetState.initiated:
                     target.awaiting_new_attempt = True
             return
-        status = _status_by_slug(client)
         repair = []
         for name in names:
             if status.get(name, {}).get("connected"):
@@ -133,7 +167,7 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
 
 def _off_desktop_result(client: Any, action: str, names: List[str], force: bool, session_id: str) -> str:
     operation = ConnectionOperation([Target(n, "connector", action) for n in names], session_key=session_id)
-    _prepare(client, action, force)(operation)
+    _prepare(client, action, force, card=False)(operation)
     payload = operation.result(with_urls=True)
     payload["status"] = "initiated" if any(t.state == TargetState.initiated for t in operation.targets) else "settled"
     payload["note"] = (
@@ -177,7 +211,7 @@ def run_managed_action(
             return _off_desktop_result(client, action, connectors, force, session_key)
         return run_operation(
             [Target(n, "connector", action) for n in connectors],
-            Kind(prepare=_prepare(client, action, force), observe=lambda op: _observe(client, op), note=NOTE),
+            Kind(prepare=_prepare(client, action, force, card=True), observe=lambda op: _observe(client, op), note=NOTE),
             session_key=session_key, tool_call_id=tool_call_id,
             connection_callback=connection_callback, with_urls_in_result=False,
         )

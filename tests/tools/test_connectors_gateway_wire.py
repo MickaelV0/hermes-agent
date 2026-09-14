@@ -15,16 +15,75 @@ def test_connections_result_carries_status_reason_under_either_spelling():
         assert row.status_reason == "vendor: bad scope"
 
 
-def test_list_item_accepts_the_seven_states_and_absence():
-    for value in ("active", "initiated", "failed", "expired", "revoked", "inactive", "initializing"):
-        item = wire.ConnectorListItem.model_validate({"connector": "gmail", "connected": False, "connectionStatus": value})
+ITEM = {"connector": "gmail", "connected": False, "title": "Gmail", "description": "Mail",
+        "iconUrl": "https://logos.composio.dev/api/gmail", "authKind": "oauth"}
+
+
+def test_list_item_accepts_the_six_contract_states_and_absence():
+    for value in ("pending", "active", "failed", "expired", "revoked", "inactive"):
+        item = wire.ConnectorListItem.model_validate({**ITEM, "connectionStatus": value})
         assert item.connection_status == value
-    assert wire.ConnectorListItem.model_validate({"connector": "gmail", "connected": True}).connection_status is None
+    assert wire.ConnectorListItem.model_validate({**ITEM, "connected": True}).connection_status is None
+
+
+def test_list_item_rejects_the_retired_seven_state_words():
+    for value in ("initiated", "initializing"):
+        with pytest.raises(ValidationError):
+            wire.ConnectorListItem.model_validate({**ITEM, "connectionStatus": value})
+
+
+def test_list_item_requires_the_toolkit_metadata():
+    for missing in ("title", "description", "iconUrl", "authKind"):
+        with pytest.raises(ValidationError):
+            wire.ConnectorListItem.model_validate({k: v for k, v in ITEM.items() if k != missing})
+    with pytest.raises(ValidationError):
+        wire.ConnectorListItem.model_validate({**ITEM, "iconUrl": "http://logos.composio.dev/api/gmail"})
+    item = wire.ConnectorListItem.model_validate({**ITEM, "activeConnectionId": "ca_1"})
+    assert item.icon_url == ITEM["iconUrl"] and item.auth_kind == "oauth" and item.active_connection_id == "ca_1"
+
+
+def test_list_page_is_typed_whole_with_its_total():
+    page = wire.ConnectorListResponse.model_validate({"items": [ITEM], "nextCursor": None, "total": 3})
+    assert page.total == 3 and page.next_cursor is None and page.items[0].title == "Gmail"
+    with pytest.raises(ValidationError):
+        wire.ConnectorListResponse.model_validate({"items": [ITEM], "nextCursor": None})
+
+
+def test_mint_result_carries_the_account_id_only_where_the_vendor_does():
+    initiated = wire.ConnectorConnectionResult.model_validate(
+        {"connector": "gmail", "status": "initiated", "connectUrl": "https://c/1", "connectionId": "ca_1"})
+    assert initiated.connection_id == "ca_1"
+    with pytest.raises(ValidationError):
+        wire.ConnectorConnectionResult.model_validate({"connector": "gmail", "status": "initiated", "connectUrl": "https://c/1"})
+    with pytest.raises(ValidationError):
+        wire.ConnectorConnectionResult.model_validate({"connector": "gmail", "status": "failed", "connectionId": "ca_1"})
+    # A no-auth toolkit answers active with no account.
+    assert wire.ConnectorConnectionResult.model_validate({"connector": "wiki", "status": "active"}).connection_id is None
+
+
+def test_connection_required_carries_link_and_account_together_or_not_at_all():
+    base = {"code": "CONNECTION_REQUIRED", "message": "connect gmail", "connector": "gmail"}
+    both = wire.ConnectorToolError.model_validate({**base, "connectUrl": "https://c/1", "connectionId": "ca_1"})
+    assert both.connection_id == "ca_1"
+    assert wire.ConnectorToolError.model_validate(base).connection_id is None
+    for half in ({"connectUrl": "https://c/1"}, {"connectionId": "ca_1"}):
+        with pytest.raises(ValidationError):
+            wire.ConnectorToolError.model_validate({**base, **half})
+
+
+def test_account_row_is_typed_per_the_contract():
+    row = wire.ConnectorAccount.model_validate({
+        "connectionId": "ca_1", "connector": "gmail", "status": "active", "label": "gmail_knop-bual",
+        "active": True, "createdAt": "2026-09-14T10:00:00.000Z", "updatedAt": "2026-09-14T10:00:00.000Z"})
+    assert row.alias is None and row.active is True
+    with pytest.raises(ValidationError):
+        wire.ConnectorAccount.model_validate({"connectionId": "ca_1", "connector": "gmail", "status": "initiated",
+                                              "label": "x", "active": True, "createdAt": "t", "updatedAt": "t"})
 
 
 def test_list_item_rejects_an_unknown_status_loudly():
     with pytest.raises(ValidationError):
-        wire.ConnectorListItem.model_validate({"connector": "gmail", "connected": False, "connectionStatus": "weird"})
+        wire.ConnectorListItem.model_validate({**ITEM, "connectionStatus": "weird"})
 
 
 def _connection_required_entry():

@@ -23,6 +23,11 @@ export interface ConnectionTarget {
   state: ConnectionTargetState
   detail: string
   connectUrl: null | string
+  /** The vendor account of a managed target once a mint named one; empty before that and on MCP targets. */
+  connectionId: string
+  /** Toolkit metadata on connector targets; empty on an MCP target. */
+  iconUrl: string
+  title: string
   tools: string[]
 }
 
@@ -100,7 +105,10 @@ function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null 
     kind: entry.kind === 'connector' ? 'connector' : 'mcp',
     name,
     state: targetState(entry.state) ?? 'pending',
-    tools: entry.tools ?? []
+    tools: entry.tools ?? [],
+    connectionId: entry.connection_id ?? '',
+    iconUrl: entry.icon_url ?? '',
+    title: entry.title ?? ''
   }
 }
 
@@ -164,12 +172,18 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
     connectUrl: live.connect_url ?? target.connectUrl,
     detail: live.detail ?? target.detail,
     state: live.state,
-    tools: live.tools ?? target.tools
+    tools: live.tools ?? target.tools,
+    connectionId: live.connection_id ?? target.connectionId,
+    iconUrl: live.icon_url ?? target.iconUrl,
+    title: live.title ?? target.title
   }
 
   const same =
     next.connectUrl === target.connectUrl &&
+    next.connectionId === target.connectionId &&
     next.detail === target.detail &&
+    next.iconUrl === target.iconUrl &&
+    next.title === target.title &&
     next.state === target.state &&
     next.tools.length === target.tools.length &&
     next.tools.every((tool, index) => tool === target.tools[index])

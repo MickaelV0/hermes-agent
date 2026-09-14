@@ -48,7 +48,8 @@ class GatewayFake:
                 self.connected.add(slug)
         rows = []
         for s in ("gmail", "notion"):
-            row = {"connector": s, "enabled": True, "connected": s in self.connected}
+            row = {"connector": s, "enabled": True, "connected": s in self.connected, "title": s.title(),
+                   "description": f"{s} mail", "iconUrl": f"https://logos.composio.dev/api/{s}", "authKind": "oauth"}
             script = self.statuses.get(s)
             if script:
                 row["connectionStatus"] = script[min(self.lists, len(script)) - 1]
@@ -63,6 +64,7 @@ class GatewayFake:
             row = {"connector": slug, "status": self.mint_status, "reinitiated": reinitiate}
             if self.mint_status == "initiated":
                 row["connect_url"] = f"https://connect.example/{slug}/{len(self.mints)}"
+                row["connection_id"] = f"ca_{slug}_{len(self.mints)}"
             if self.status_reason:
                 row["status_reason"] = self.status_reason
             results.append(row)
@@ -110,6 +112,26 @@ def test_wait_is_gone_and_force_exists():
 # ---------------------------------------------------------------------------
 # desktop: one op, blocks, no URL in the result
 # ---------------------------------------------------------------------------
+
+
+def test_card_targets_carry_the_toolkit_metadata_and_the_account_id():
+    """The card draws the vendor's title and icon and the model result names the account the mint made."""
+    gw = GatewayFake(flips={"gmail": 2})
+    cb = _desktop_callback()
+    out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=cb)
+    (target,) = cb.seen[0]["targets"]
+    assert target["title"] == "Gmail" and target["icon_url"] == "https://logos.composio.dev/api/gmail"
+    assert target["connection_id"] == "ca_gmail_1"
+    assert out["targets"][0]["connection_id"] == "ca_gmail_1"
+
+
+def test_a_pending_row_moves_nothing_and_a_revoked_row_is_failed():
+    gw = GatewayFake()
+    gw.statuses = {"gmail": ["pending", "pending", "revoked"]}
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.3):
+        out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
+    assert out["settled_by"] == "deadline"
+    assert gw.lists >= 3
 
 
 def test_desktop_connect_mints_once_emits_the_card_and_returns_outcomes_without_urls():
@@ -208,7 +230,7 @@ def test_force_does_not_settle_connected_from_the_old_account():
     """An account switch: the vendor keeps the old account active while the new link waits. `connected`
     on the list is the old account until the row has read as anything else once."""
     gw = GatewayFake(connected={"gmail"})
-    gw.statuses = {"gmail": ["active", "active", "initializing", "active"]}
+    gw.statuses = {"gmail": ["active", "active", "pending", "active"]}
     out = _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=_desktop_callback(), tick=0.01)
     assert out["settled_by"] == "all_resolved"
     assert out["targets"][0]["state"] == "connected"

@@ -26,6 +26,11 @@ class Target:
     state: TargetState = TargetState.pending
     detail: str = ""
     connect_url: Optional[str] = None
+    # The vendor account a managed mint created or observed. Not the desktop transport's connection id.
+    connection_id: Optional[str] = None
+    # From the toolkit list; the card draws them. Empty for an MCP target.
+    title: str = ""
+    icon_url: str = ""
     # Opaque per-attempt handle when the gateway mints one (absent today; the status route adds it).
     attempt: Optional[str] = None
     # `reconnect force` on a connected account: the list reports the OLD account `active` until the user
@@ -44,6 +49,12 @@ class Target:
             out["detail"] = self.detail
         if with_url and self.connect_url:
             out["connect_url"] = self.connect_url
+        if self.connection_id:
+            out["connection_id"] = self.connection_id
+        if self.title:
+            out["title"] = self.title
+        if self.icon_url:
+            out["icon_url"] = self.icon_url
         if self.attempt:
             out["attempt"] = self.attempt
         out.update(self.extra)
@@ -78,7 +89,8 @@ class ConnectionOperation:
 
     def transition(
         self, name: str, to: TargetState, actor: Actor, *, detail: Optional[str] = None,
-        connect_url: Optional[str] = None, attempt: Optional[str] = None, **extra: Any,
+        connect_url: Optional[str] = None, connection_id: Optional[str] = None, attempt: Optional[str] = None,
+        **extra: Any,
     ) -> Optional[Dict[str, Any]]:
         """Move one target; the contract decides whether ``actor`` may. Returns the change, or None
         when the target is already in ``to``. Allowed after settlement: the frozen result stays."""
@@ -97,6 +109,8 @@ class ConnectionOperation:
             change["detail"] = target.detail
             if connect_url is not None:
                 target.connect_url = connect_url
+            if connection_id is not None:
+                target.connection_id = connection_id
             if attempt is not None:
                 target.attempt = attempt
             if extra:

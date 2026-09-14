@@ -24,7 +24,10 @@ const PRIMARY_OWNER = { connectionId: null, profile: 'default' }
 const GMAIL: ConnectionTarget = {
   action: 'connect',
   connectUrl: 'https://connect.example/gmail',
+  connectionId: '',
   detail: '',
+  iconUrl: '',
+  title: '',
   kind: 'connector',
   name: 'gmail',
   state: 'pending',

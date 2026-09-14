@@ -18,8 +18,8 @@ const REQUEST: ConnectionRequest = {
   settled: false,
   settledBy: null,
   targets: [
-    { action: 'install', connectUrl: null, detail: '', kind: 'mcp', name: 'linear', state: 'pending', tools: [] },
-    { action: 'install', connectUrl: null, detail: '', kind: 'mcp', name: 'postgres', state: 'pending', tools: [] }
+    { action: 'install', connectUrl: null, connectionId: '', detail: '', iconUrl: '', kind: 'mcp', name: 'linear', state: 'pending', title: '', tools: [] },
+    { action: 'install', connectUrl: null, connectionId: '', detail: '', iconUrl: '', kind: 'mcp', name: 'postgres', state: 'pending', title: '', tools: [] }
   ]
 }
 

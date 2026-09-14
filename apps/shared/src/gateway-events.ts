@@ -391,10 +391,15 @@ export interface ConnectionOperationTarget {
   action: ConnectionTargetAction
   attempt?: string
   connect_url?: string
+  /** The vendor account a managed mint created or observed; never the desktop transport's connection id. */
+  connection_id?: string
   detail?: string
+  /** From the toolkit list, on connector targets only; an MCP target has neither. */
+  icon_url?: string
   kind: ConnectionTargetKind
   name: string
   state: ConnectionTargetState
+  title?: string
   tools?: string[]
 }
 

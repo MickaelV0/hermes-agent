@@ -19,6 +19,9 @@ from tools.connectors.gateway.errors import (
     ToolGatewayError,
     parse_gateway_error,
 )
+
+# The vendor answers 400 to a shorter search; hermes refuses before the request.
+MIN_SEARCH_CHARS = 3
 from tools.connectors.gateway.merge import PlannedCall
 
 logger = logging.getLogger(__name__)
@@ -105,34 +108,67 @@ class ConnectorClient:
         """Never retry: the gateway cannot deduplicate authorization starts."""
         body = wire.ConnectorConnectionsRequest(
             connectors=list(connectors), reinitiate=reinitiate
-        ).model_dump(by_alias=True)
+        ).model_dump(by_alias=True, exclude_none=True)
         payload = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
         return wire.ConnectorConnectionsResponse.model_validate(payload).model_dump()
 
-    def list_connectors(self) -> list[dict[str, Any]]:
+    def list_connectors(
+        self, *, search: Optional[str] = None, connected: Optional[bool] = None
+    ) -> list[dict[str, Any]]:
+        """Every page of the session's toolkit list, each typed whole; ``total`` is parsed and dropped
+        until a caller needs it."""
+        if search is not None and len(search) < MIN_SEARCH_CHARS:
+            raise ValueError(f"search needs at least {MIN_SEARCH_CHARS} characters")
+        query = "?limit=50"
+        if search is not None:
+            query += f"&search={search}"
+        if connected is not None:
+            query += f"&connected={'true' if connected else 'false'}"
         items: list[dict[str, Any]] = []
         cursor: Optional[str] = None
         for _ in range(20):
-            path = f"{wire.CONNECTORS_PATH}?limit=50"
+            path = f"{wire.CONNECTORS_PATH}{query}"
             if cursor:
                 path += f"&cursor={cursor}"
-            payload = self._request("GET", path, None)
-            if not isinstance(payload, dict) or "error" in payload:
-                raise ToolGatewayError("invalid connector list page", code="INVALID_RESPONSE")
-            page = payload.get("items")
-            if not isinstance(page, list) or any(not isinstance(entry, dict) for entry in page):
-                raise ToolGatewayError("invalid connector list items", code="INVALID_RESPONSE")
-            try:
-                items.extend(wire.ConnectorListItem.model_validate(entry).model_dump(by_alias=True) for entry in page)
-            except ValidationError as exc:
-                raise ToolGatewayError(f"invalid connector list item: {exc.errors()[0].get('msg')}",
-                                       code="INVALID_RESPONSE") from exc
-            cursor = payload.get("nextCursor")
+            page = self._parse(wire.ConnectorListResponse, self._request("GET", path, None), "connector list page")
+            items.extend(item.model_dump(by_alias=True) for item in page.items)
+            cursor = page.next_cursor
             if not cursor:
                 return items
-            if not isinstance(cursor, str):
-                raise ToolGatewayError("invalid connector list cursor", code="INVALID_RESPONSE")
         raise ToolGatewayError("connector list pagination incomplete", code="INVALID_RESPONSE")
+
+    def list_accounts(
+        self, *, connector: Optional[str] = None, status: Optional[Sequence[str]] = None
+    ) -> list[dict[str, Any]]:
+        query = []
+        if connector:
+            query.append(f"connector={connector}")
+        if status:
+            query.append(f"status={','.join(status)}")
+        path = wire.CONNECTOR_ACCOUNTS_PATH + (f"?{'&'.join(query)}" if query else "")
+        page = self._parse(wire.ConnectorAccountsResponse, self._request("GET", path, None), "connector accounts")
+        return [row.model_dump(by_alias=True) for row in page.accounts]
+
+    def account_status(self, connection_id: str) -> Optional[dict[str, Any]]:
+        """One account's row; ``None`` when the gateway no longer knows it. A 429 raises ``RateLimited``."""
+        try:
+            payload = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None)
+        except GatewayUnavailable as exc:
+            if exc.code == "connection_not_found":
+                return None
+            raise
+        return self._parse(wire.ConnectorAccount, payload, "connector account").model_dump(by_alias=True)
+
+    @staticmethod
+    def _parse(model: Any, payload: Any, what: str) -> Any:
+        if not isinstance(payload, dict) or "error" in payload:
+            raise ToolGatewayError(f"invalid {what}", code="INVALID_RESPONSE")
+        try:
+            return model.model_validate(payload)
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            raise ToolGatewayError(f"invalid {what}: {'.'.join(str(p) for p in first.get('loc', ()))}: {first.get('msg')}",
+                                   code="INVALID_RESPONSE") from exc
 
     def execute(self, planned: Sequence[PlannedCall]) -> list[dict[str, Any]]:
         """Return gateway results in request order; merge owns length mismatches."""
@@ -143,7 +179,7 @@ class ConnectorClient:
                 )
                 for plan in planned
             ]
-        ).model_dump(by_alias=True)
+        ).model_dump(by_alias=True, exclude_none=True)
         # Keep the key dispatch-local so its retry reuses it without a shared store.
         idempotency_key = str(uuid.uuid4())
         payload = self._post(
@@ -214,7 +250,7 @@ class ConnectorClient:
             if 200 <= status < 300:
                 return response.json()
 
-            error = parse_gateway_error(status, _safe_json(response))
+            error = parse_gateway_error(status, _safe_json(response), getattr(response, "headers", None))
             if error.retryable and attempt < retries:
                 last_error = error
                 logger.debug(
@@ -238,6 +274,8 @@ def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:
             error["connector"] = result.error.connector
         if result.error.connect_url:
             error["connect_url"] = result.error.connect_url
+        if result.error.connection_id:
+            error["connection_id"] = result.error.connection_id
         if result.error.hint:
             error["hint"] = result.error.hint
     return {"data": result.data, "error": error}
