@@ -29,7 +29,6 @@ logger = logging.getLogger("gateway.run")  # log-record parity with the origin m
 _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
 
-_ORAL_CHAR_SKIP = 420
 _ORAL_SYS = (
     "Tu réécris un message d'agent pour le dire à voix haute en français, "
     "dans un vocal Discord. 2 à 5 phrases courtes. Un fil, pas de liste, "
@@ -66,8 +65,8 @@ def oralize_for_discord_vc(text: str) -> str:
     stripped = (_strip_markdown_for_tts(text) or "").strip()
     if not stripped:
         return ""
-    if len(stripped) <= _ORAL_CHAR_SKIP and stripped.count("\n") <= 3:
-        return " ".join(stripped.split())
+    # Every spoken final goes through the rewrite: a short written answer is still written
+    # prose (bullets, paths, "cf.", parentheticals) and reads badly aloud.
     try:
         from agent.auxiliary_client import call_llm
         response = call_llm(

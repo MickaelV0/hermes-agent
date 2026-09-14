@@ -205,20 +205,20 @@ def synth_ambient_pcm(seconds: float = 4.0) -> bytes:
     def _whole_cycle_freq(target: float) -> float:
         cycles = max(1, round(target * seconds))
         return cycles / seconds
-    f1 = _whole_cycle_freq(196.0)   # G3 — quieter, less rumble than 110 Hz
-    f2 = _whole_cycle_freq(196.5)
-    trem = _whole_cycle_freq(0.35)
+    f1 = _whole_cycle_freq(110.0)
+    f2 = _whole_cycle_freq(110.5)
+    trem = _whole_cycle_freq(0.5)   # ~0.5 Hz tremolo
     pad = (0.55 * np.sin(2 * np.pi * f1 * t) + 0.45 * np.sin(2 * np.pi * f2 * t))
-    tremolo = 0.75 + 0.25 * (0.5 * (1 + np.sin(2 * np.pi * trem * t)))
+    tremolo = 0.6 + 0.4 * (0.5 * (1 + np.sin(2 * np.pi * trem * t)))
     signal = pad * tremolo
     rng = np.random.default_rng(7)
     noise = rng.standard_normal(n)
-    kernel = np.ones(96) / 96.0
+    kernel = np.ones(64) / 64.0
     noise = np.convolve(noise, kernel, mode="same")
-    signal = signal + 0.04 * noise
+    signal = signal + 0.08 * noise
     # Normalise to a modest peak (mixer applies the real ambient gain on top).
     peak = float(np.max(np.abs(signal))) or 1.0
-    signal = (signal / peak) * 0.28
+    signal = (signal / peak) * 0.5
     mono16 = (signal * 32767.0).astype(np.int16)
     stereo16 = np.repeat(mono16[:, None], CHANNELS, axis=1).reshape(-1)
     return stereo16.tobytes()
