@@ -20,7 +20,6 @@ export const zh = defineLocale({
     notConnected: '未连接',
     timeout: '仍在等待授权。',
     refresh: '刷新状态',
-    statusError: '无法检查连接，请刷新重试。',
     connectError: '无法开始授权，请重试。',
     connectErrorFor: app => `无法为 ${app} 开始授权。`,
     unavailable: '此会话暂时无法使用连接器。',
