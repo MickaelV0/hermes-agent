@@ -170,6 +170,9 @@ export interface ConnectorCardProps {
   otherBusy?: boolean
   actionDisabled?: boolean
   outcome?: ConnectorCardOutcome
+  /** The action itself is running (spinner, button held). Independent of `phase`: a row can show
+   *  "Finish connecting in your browser" while Connect stays clickable to reopen the link. */
+  busy?: boolean
   phase?: string
   source?: ConnectorCardSource
   state: ConnectorCardState
@@ -189,6 +192,7 @@ export function ConnectorCard({
   onEnvChange,
   otherBusy = false,
   actionDisabled = false,
+  busy = false,
   outcome,
   phase,
   source,
@@ -301,7 +305,7 @@ export function ConnectorCard({
               <Button
                 className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
                 disabled={otherBusy || actionDisabled}
-                loading={working}
+                loading={busy}
                 onClick={onConnect}
                 size="xs"
                 variant="ghost"

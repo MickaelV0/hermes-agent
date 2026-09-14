@@ -317,6 +317,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
         return (
           <ConnectorCard
             actionDisabled={phase.action === 'none' || waitingForReissue || (phase.requiresUrl && target.connectUrl === null)}
+            busy={waitingForReissue}
             collapseWhenSettled={false}
             connector={{
               description: copy.describe(title),

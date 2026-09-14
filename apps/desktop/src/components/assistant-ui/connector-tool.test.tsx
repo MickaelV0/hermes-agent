@@ -114,6 +114,24 @@ describe('ConnectorTool operation card', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('opens the stored link from Connect on a waiting row, without an RPC', async () => {
+    const request = vi.fn()
+    // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
+    $gateway.set({ request } as never)
+    const openExternal = vi.fn()
+    // SAFETY: the card reads only `openExternal` from the preload bridge.
+    window.hermesDesktop = { openExternal } as never
+
+    renderConnector({ ...REQUEST, targets: [{ ...REQUEST.targets[0], state: 'initiated' }] })
+
+    const connect = await waitFor(() => screen.getByRole('button', { name: 'Connect' }))
+    expect(connect.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(connect)
+
+    expect(openExternal).toHaveBeenCalledWith('https://connect.example/gmail')
+    expect(request).not.toHaveBeenCalledWith('connectors.connect', expect.anything())
+  })
+
   it('sends Not now as a per-target skipped response', async () => {
     const request = vi.fn().mockResolvedValue({ status: 'ok' })
     // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.

@@ -377,6 +377,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
   return (
     <ConnectorCard
       accelerators
+      busy={working}
       connector={{
         description: reason || undefined,
         name: server,
