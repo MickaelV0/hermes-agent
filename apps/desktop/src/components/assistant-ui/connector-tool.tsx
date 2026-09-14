@@ -73,6 +73,7 @@ function partMatchesRequest(props: ToolCallMessagePartProps, request: Connection
 export function ConnectorTool(props: ToolCallMessagePartProps) {
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
+  const storedId = useStore(view.$storedId)
   const $request = useMemo(() => sessionConnectionRequest(runtimeId), [runtimeId])
   const request = useStore($request)
   const targetNames = requestedConnectorNames(props.args)
@@ -83,7 +84,10 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
     targetNames.length === 0
 
   const live = !untargetedStatus && partMatchesRequest(props, request)
-  const ownerSessionId = runtimeId
+  // Owner routes, hints and session rows are keyed by the stored session id; the gateway events
+  // above are keyed by the runtime id. Resolving the owner by runtime id finds nothing and the
+  // card renders null while the tool blocks.
+  const ownerSessionId = storedId
   const [owner, setOwner] = useState<ConnectorOwner | null>(null)
 
   useEffect(() => {

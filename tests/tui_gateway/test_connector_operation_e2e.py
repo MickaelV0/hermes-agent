@@ -154,7 +154,9 @@ def test_desktop_connect_settles_through_callback_response(owned_session, monkey
     finished = threading.Event()
 
     def run_tool():
-        tokens = set_session_vars(platform="desktop", session_key=SID, session_id=SID)
+        # Bind the way the server binds a turn: the desktop surface arrives as the session's
+        # `source`, not as a messaging platform.
+        tokens = server._set_session_context(SID)
         try:
             result["raw"] = manage_connections(
                 {"action": "connect", "connectors": ["gmail", "notion"]},
