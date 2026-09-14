@@ -1,18 +1,19 @@
-import { isRecord } from '@assistant-ui/core/internal'
+import type {
+  ConnectionAction,
+  ConnectionRequestParams,
+  ConnectionResult,
+  ConnectionRequestTarget as ConnectionTarget,
+  ConnectionTargetKind,
+  ConnectionTargetOutcomeState,
+  ConnectionTargetOutcome as GatewayConnectionTargetOutcome
+} from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
-import { $gateway } from './gateway'
+import { respondToServerRequest } from './server-requests'
 
-/** Pending `connection.request`s, keyed by runtime session id. The backend owns `opId`,
+/** Pending `connection` requests, keyed by runtime session id. The backend owns `opId`,
  *  targets and `deadlineAt`; the renderer never recomputes them. */
-export type ConnectionTargetKind = 'connector' | 'mcp'
-export type ConnectionAction = 'authorize' | 'enable' | 'install'
-
-export interface ConnectionTarget {
-  name: string
-  kind: ConnectionTargetKind
-  action: ConnectionAction
-}
+export type { ConnectionAction, ConnectionTarget, ConnectionTargetKind }
 
 export interface ConnectionRequest {
   requestId: string
@@ -27,23 +28,14 @@ export interface ConnectionRequest {
   sessionId: string | null
 }
 
-/** One target's answer. `declined` = Not now; `error` = recoverable failure. */
-export type ConnectionTargetStatus = 'authorized' | 'declined' | 'enabled' | 'error' | 'installed'
+/** Generated target state for a connection operation result. */
+export type ConnectionTargetState = ConnectionTargetOutcomeState
 
-export interface ConnectionTargetOutcome {
-  name: string
-  status: ConnectionTargetStatus
-  detail?: string
-  /** Tool names now available (OAuth flows report them). */
-  tools?: string[]
-}
+/** Generated target result for a connection operation. */
+export type ConnectionTargetOutcome = GatewayConnectionTargetOutcome
 
-/** The card's answer, serialized back through `connection.respond`. */
-export interface ConnectionOutcome {
-  targets: ConnectionTargetOutcome[]
-  /** Advisory only; the backend derives the settle reason from target states. */
-  settled_by?: 'all_resolved' | 'continue'
-}
+/** Generated result sent through the server-request response rail. */
+export type ConnectionOutcome = ConnectionResult
 
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
@@ -53,58 +45,25 @@ export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 export const sessionConnectionRequest = (sessionId: string | null) =>
   computed($connectionRequests, requests => requests[keyFor(sessionId)] ?? null)
 
-const ACTIONS: readonly ConnectionAction[] = ['install', 'enable', 'authorize']
-
-/** The wire shape of `connection.request` and the `pending_connection` resume field. */
-export interface ConnectionRequestWire {
-  request_id?: string
-  op_id?: string
-  deadline_at?: number
-  reason?: string
-  targets?: unknown
-}
-
-const str = (value: string | undefined): string => value ?? ''
-
-/** Validate a wire payload. Null when it carries no usable operation (no request id, no targets). */
+/** Park the `connection` request's params (already validated against the generated contract by the
+ *  backend). Null when it names no target: there is nothing for a card to show. */
 export function normalizeConnectionRequest(
-  payload: ConnectionRequestWire | null | undefined,
+  params: ConnectionRequestParams | null | undefined,
+  requestId: string,
   sessionId: string | null
 ): ConnectionRequest | null {
-  if (!payload) {
-    return null
-  }
-
-  const requestId = str(payload.request_id)
-  const opId = str(payload.op_id)
-  const deadlineAt = payload.deadline_at && payload.deadline_at > 0 ? payload.deadline_at : 0
-  const rawTargets = Array.isArray(payload.targets) ? payload.targets : []
-
-  const targets: ConnectionTarget[] = rawTargets.flatMap(entry => {
-    if (!isRecord(entry)) {
-      return []
-    }
-
-    // SAFETY: isRecord narrowed to an object; each field is re-checked against its allowed values below.
-    const t = entry as { action?: unknown; kind?: unknown; name?: unknown }
-    const name = String(t.name ?? '').trim()
-    const action = ACTIONS.find(a => a === t.action) ?? 'install'
-
-    return name && t.name === name.trim() ? [{ action, kind: t.kind === 'connector' ? 'connector' : 'mcp', name }] : []
-  })
-
-  if (!requestId || !opId || !deadlineAt || targets.length === 0) {
+  if (!params || !requestId || !params.op_id || params.deadline_at <= 0 || params.targets.length === 0) {
     return null
   }
 
   return {
-    deadlineAt,
-    opId,
-    reason: str(payload.reason),
+    deadlineAt: params.deadline_at,
+    opId: params.op_id,
+    reason: params.reason ?? '',
     receivedAt: Date.now() / 1000,
     requestId,
     sessionId,
-    targets
+    targets: params.targets.map(({ action, kind, name }) => ({ action, kind, name }))
   }
 }
 
@@ -161,12 +120,10 @@ export async function respondToConnectionRequest(request: ConnectionRequest, out
 
   clearConnectionRequest(request.requestId, request.sessionId)
 
-  await $gateway.get()?.request('connection.respond', {
-    request_id: request.requestId,
-    result: JSON.stringify(outcome)
+  return respondToServerRequest(request.requestId, {
+    settled_by: outcome.settled_by,
+    targets: outcome.targets
   })
-
-  return true
 }
 
 /** Typing a message while the card is open declines every target, otherwise the typed
@@ -181,7 +138,7 @@ export async function skipConnectionRequest(sessionId: string | null | undefined
   try {
     await respondToConnectionRequest(request, {
       settled_by: 'all_resolved',
-      targets: request.targets.map(target => ({ name: target.name, status: 'declined' }))
+      targets: request.targets.map(target => ({ name: target.name, state: 'declined' }))
     })
   } catch {
     // A failed skip must not block the message being sent; the tool settles on its deadline.
