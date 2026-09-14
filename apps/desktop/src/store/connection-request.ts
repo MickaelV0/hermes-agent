@@ -11,7 +11,13 @@ import type {
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import type { ConnectorCardField } from '@/components/ui/connector-card'
+
 import { $gateway } from './gateway'
+
+/** The backend sends ``prompt`` as null when the catalog entry has none; the card takes an absent one. */
+const envFields = (fields: ConnectionTargetEnvField[] | null | undefined): ConnectorCardField[] =>
+  (fields ?? []).map(({ name, prompt, required }) => ({ name, prompt: prompt ?? undefined, required }))
 
 export type {
   ConnectionSettleReason,
@@ -35,7 +41,7 @@ export interface ConnectionTarget {
   /** Toolkit metadata on connector targets; empty on an MCP target. */
   tools: string[]
   /** Credentials an MCP install is still waiting for; empty on every other target. */
-  requiredEnv: ConnectionTargetEnvField[]
+  requiredEnv: ConnectorCardField[]
 }
 
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
@@ -115,7 +121,7 @@ function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null 
     state: targetState(entry.state) ?? 'pending',
     tools: entry.tools ?? [],
     connectionId: entry.connection_id ?? '',
-    requiredEnv: entry.required_env ?? []
+    requiredEnv: envFields(entry.required_env)
   }
 }
 
@@ -190,7 +196,7 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
     state: live.state,
     tools: live.tools ?? target.tools,
     connectionId: live.connection_id ?? target.connectionId,
-    requiredEnv: live.required_env ?? target.requiredEnv
+    requiredEnv: live.required_env ? envFields(live.required_env) : target.requiredEnv
   }
 
   const same =
@@ -206,7 +212,7 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
 }
 
 // Every frame carries a fresh array, so identity would churn the row and remount its open inputs.
-const sameEnvFields = (next: ConnectionTargetEnvField[], previous: ConnectionTargetEnvField[]): boolean =>
+const sameEnvFields = (next: ConnectorCardField[], previous: ConnectorCardField[]): boolean =>
   next.length === previous.length &&
   next.every(
     (field, index) =>
@@ -289,7 +295,7 @@ export async function respondToConnectionRequest(request: ConnectionRequest, out
 
   await $gateway.get()?.request('connection.respond', {
     op_id: request.opId,
-    result: JSON.stringify(outcome),
+    result: outcome,
     session_id: request.sessionId
   })
 

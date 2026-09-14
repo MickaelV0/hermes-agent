@@ -317,7 +317,7 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
 
     try {
       const sent = await respondToConnectionRequest(request, {
-        targets: [{ env: fields.length > 0 ? envDraft : undefined, name: server, status: 'approved' }]
+        targets: [fields.length > 0 ? { env: envDraft, name: server, status: 'approved' } : { name: server, status: 'approved' }]
       })
 
       if (!sent) {

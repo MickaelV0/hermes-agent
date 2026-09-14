@@ -227,10 +227,13 @@ def _(rid, params):
     """The card's answer for the operation named by ``op_id``: per target an approval that starts
     the backend's work or a skip, plus an optional Continue. The card never witnesses an outcome,
     so any other claim moves nothing."""
+    from pydantic import ValidationError
+
     from tools.connectors import live
     from tools.connectors.contract import SettleReason
     from tools.connectors.mcp import apply_answer
     from tools.connectors.operation import IllegalTransition
+    from tui_gateway.contracts.connectors_operation import ConnectionAnswer
 
     owner, error = _owned_session(rid, params)
     if error:
@@ -238,14 +241,19 @@ def _(rid, params):
     operation, error = _live_operation(rid, params, owner)
     if error:
         return error
-    raw = params.get("result", "")
+    # The wire check refuses unknown keys only; the closed answer vocabulary (approved / skipped) is
+    # this handler's refusal, so a card claiming ``connected`` is answered, not logged.
+    try:
+        answer = ConnectionAnswer.model_validate(params["result"])
+    except ValidationError as exc:
+        return _connector_rpc_error(rid, 4002, "INVALID_ANSWER", exc.errors()[0].get("msg", "invalid answer"))
     # An approval runs the backend's work on this thread (an enable writes config.yaml, an install
     # stores credentials), so the answer is applied under the session's profile the way
     # ``_connector_rpc`` binds it; the RPC thread carries no profile of its own.
     scope = {"profile_home": owner.get("profile_home") or str(_hermes_home)}
     with _session_profile_runtime_scope(scope):
         try:
-            apply_answer(operation, raw if isinstance(raw, str) else json.dumps(raw))
+            apply_answer(operation, answer.model_dump_json(exclude_none=True))
         except IllegalTransition as exc:
             return _connector_rpc_error(rid, 4002, "ILLEGAL_TRANSITION", str(exc))
         if not operation.settled and operation.all_resolved:

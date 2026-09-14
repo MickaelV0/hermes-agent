@@ -141,7 +141,7 @@ describe('the MCP setup card', () => {
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
-        result: JSON.stringify({ targets: [{ name: 'linear', status: 'approved' }] }),
+        result: { targets: [{ name: 'linear', status: 'approved' }] },
         session_id: SESSION_ID
       })
     })
@@ -192,7 +192,7 @@ describe('the MCP setup card', () => {
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
-        result: JSON.stringify({ targets: [{ env: { LINEAR_API_KEY: 'lin_123' }, name: 'linear', status: 'approved' }] }),
+        result: { targets: [{ env: { LINEAR_API_KEY: 'lin_123' }, name: 'linear', status: 'approved' }] },
         session_id: SESSION_ID
       })
     })

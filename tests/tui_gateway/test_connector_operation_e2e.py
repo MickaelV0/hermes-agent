@@ -272,13 +272,13 @@ def test_connection_respond_ignores_outcome_claims_and_rejects_strangers(owned_s
     live.open(operation)
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
 
-    ignored = _rpc(
+    refused = _rpc(
         owner,
         "connection.respond",
         op_id=operation.op_id,
         result={"targets": [{"name": "gmail", "status": "connected"}]},
     )
-    assert "result" in ignored, ignored
+    assert refused["error"]["code"] == 4002, refused
     assert operation.target("gmail").state == TargetState.initiated
 
     foreign = _rpc(

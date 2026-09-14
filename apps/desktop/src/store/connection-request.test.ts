@@ -22,6 +22,7 @@ const WIRE = {
   op_id: 'op-1',
   seq: 1,
   tool_call_id: 'call-1',
+  timeout_seconds: 120,
   targets: [
     { action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const },
     { action: 'connect' as const, kind: 'connector' as const, name: 'notion', state: 'pending' as const }
@@ -236,7 +237,7 @@ describe('connection-request store', () => {
     expect(await skipConnectionTarget(req, 'notion')).toBe(true)
     expect(rpc.mock.calls[0][0]).toBe('connection.respond')
     expect(rpc.mock.calls[0][1]).toMatchObject({ op_id: 'op-1', session_id: 'a' })
-    expect(JSON.parse(rpc.mock.calls[0][1].result)).toEqual({ targets: [{ name: 'notion', status: 'skipped' }] })
+    expect(rpc.mock.calls[0][1].result).toEqual({ targets: [{ name: 'notion', status: 'skipped' }] })
     expect($connectionRequests.get().a).toBeDefined()
 
     updateConnectionRequest('a', frame({ gmail: 'connected', notion: 'skipped' }, { settled: true, settled_by: 'all_resolved' }))
@@ -250,7 +251,7 @@ describe('connection-request store', () => {
     setConnectionRequest(request('a'))
 
     expect(await skipConnectionRequest('a')).toBe(true)
-    expect(JSON.parse(rpc.mock.calls[0][1].result)).toEqual({ settled_by: 'continue' })
+    expect(rpc.mock.calls[0][1].result).toEqual({ settled_by: 'continue' })
   })
 
   it('continue is a one-field payload', async () => {
@@ -260,6 +261,6 @@ describe('connection-request store', () => {
     setConnectionRequest(req)
 
     await continueConnectionRequest(req)
-    expect(JSON.parse(rpc.mock.calls[0][1].result)).toEqual({ settled_by: 'continue' })
+    expect(rpc.mock.calls[0][1].result).toEqual({ settled_by: 'continue' })
   })
 })

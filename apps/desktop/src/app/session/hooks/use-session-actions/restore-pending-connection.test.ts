@@ -16,6 +16,7 @@ const SNAPSHOT = {
   deadline_at: 1_800_000_000,
   op_id: 'op-1',
   seq: 3,
+  timeout_seconds: 300,
   targets: [{ action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const }],
   tool_call_id: 'call-1'
 }
