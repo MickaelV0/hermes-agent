@@ -90,6 +90,16 @@ def connectors_available(
         return False
 
 
+def operation_session_key(session_id: Optional[str]) -> str:
+    """The key an operation is registered under: the gateway session key the RPCs look up by
+    (``HERMES_SESSION_KEY``), falling back to the agent's session id where no gateway bound one.
+    The agent id alone is wrong on the desktop: compaction rotates it mid-turn while the gateway
+    key stays, and a card keyed by the old id can no longer be driven."""
+    from gateway.session_context import get_session_env
+
+    return get_session_env("HERMES_SESSION_KEY", "") or str(session_id or "")
+
+
 def session_platform() -> str:
     """The session's surface (``desktop``, ``tui``, ``cli``, a messaging platform, or '').
 

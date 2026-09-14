@@ -158,10 +158,12 @@ def test_desktop_connect_settles_through_callback_response(owned_session, monkey
         # `source`, not as a messaging platform.
         tokens = server._set_session_context(SID)
         try:
+            # The agent's durable session_id is not the gateway session key (compaction rotates it
+            # mid-turn); the operation must register under the key every RPC looks it up by.
             result["raw"] = manage_connections(
                 {"action": "connect", "connectors": ["gmail", "notion"]},
                 client_factory=lambda: client,
-                session_id=SID,
+                session_id="20260914_rotated_agent_id",
                 connection_callback=server._agent_cbs(SID)["connection_callback"],
             )
         except BaseException as exc:  # assertion below reports any real-path failure

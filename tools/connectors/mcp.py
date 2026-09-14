@@ -9,7 +9,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from tools.connectors.contract import Actor, SettleReason, TargetState
-from tools.connectors.gateway.config import session_platform
+from tools.connectors.gateway.config import operation_session_key, session_platform
 from tools.connectors.operation import ConnectionOperation, Target
 from tools.connectors.run import Kind, run_operation
 from tools.registry import tool_error
@@ -121,15 +121,16 @@ def run_mcp_operation(
     if error:
         return tool_error(error)
     targets = [Target(n, "mcp", action) for n in names]
+    session_key = operation_session_key(session_id)
     # The surface decides, not the callback: every tui_gateway session has the callback attached,
     # the Ink TUI included, and only the desktop renders the card.
     if session_platform() != "desktop" or connection_callback is None:
-        return _unavailable(ConnectionOperation(targets, session_key=str(session_id or "")))
+        return _unavailable(ConnectionOperation(targets, session_key=session_key))
     def prepare(operation: ConnectionOperation) -> None:
         pass
 
     return run_operation(
         targets, Kind(prepare=prepare, observe=lambda op: None, note=NOTE),
-        session_key=str(session_id or ""), tool_call_id=tool_call_id, connection_callback=connection_callback,
+        session_key=session_key, tool_call_id=tool_call_id, connection_callback=connection_callback,
         with_urls_in_result=False,
     )
