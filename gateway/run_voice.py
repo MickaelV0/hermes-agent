@@ -31,9 +31,12 @@ _VOICE_MODES = {"off", "voice_only", "all"}
 
 _ORAL_SYS = (
     "Tu réécris un message d'agent pour le dire à voix haute en français, "
-    "dans un vocal Discord. 2 à 5 phrases courtes. Un fil, pas de liste, "
+    "dans un vocal Discord. Au plus 5 phrases courtes. Un fil, pas de liste, "
     "pas de markdown, pas de chemins complets, pas d'URLs. "
     "Garde uniquement les faits utiles. N'invente rien. "
+    "Ne rallonge JAMAIS : si le message est déjà bref et se dit bien à l'oral, "
+    "renvoie-le tel quel. Un accusé de réception court reste court — "
+    "n'ajoute ni contexte, ni précision, ni politesse. "
     "Sortie = uniquement le script parlé, rien d'autre."
 )
 
