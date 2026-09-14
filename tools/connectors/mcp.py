@@ -176,7 +176,8 @@ class _Runner:
         self.work: Dict[str, _Work] = {}
         # The credentials the card approved, per target. Try again carries none (a failed row has
         # no fields), so the install that runs again is the one the user approved. Kept here and
-        # never on the target: every target field is serialised to the model.
+        # not on the target: the values are secrets, and the runner is the one object whose life
+        # is exactly the operation's.
         self.approved_env: Dict[str, Dict[str, str]] = {}
 
     def run(self, table: Dict[str, Callable], operation: ConnectionOperation, target: Target,
@@ -221,7 +222,12 @@ class _Runner:
     def _prepare_together(self, operation: ConnectionOperation) -> None:
         """Start every OAuth flow at once and wait for the URLs once. Each flow blocks until its
         provider publishes an authorization URL, so a sequential prepare would keep the card empty
-        for one wait per target."""
+        for one wait per target.
+
+        The wait bounds how long prepare blocks, not how long a provider may take: a row still
+        pending afterwards is left to its own thread, which is the only writer of that row and
+        ends with the URL or the flow's own failure. Failing it here as well would make two
+        writers of one row, and a URL that arrives a moment later would have no row to land on."""
         threads = [threading.Thread(target=self.run, args=(_PREPARE, operation, target), daemon=True,
                                     name=f"mcp-prepare-{target.name}") for target in operation.targets]
         for thread in threads:
@@ -229,9 +235,6 @@ class _Runner:
         deadline = time.time() + PREPARE_WAIT_SECONDS
         for thread in threads:
             thread.join(max(0.0, deadline - time.time()))
-        for target in operation.targets:
-            if target.state == TargetState.pending:
-                _fail(operation, target, "timed out waiting for the authorization URL")
 
     def observe(self, operation: ConnectionOperation) -> None:
         for target in operation.targets:

@@ -584,6 +584,27 @@ def test_several_authorize_flows_start_together_and_share_one_wait():
     assert all(t.connect_url for t in operation.targets)
 
 
+def test_a_url_that_arrives_after_the_shared_wait_still_lands_on_its_row(monkeypatch):
+    """The shared wait bounds how long prepare blocks, not how long a provider may take. A row whose
+    URL arrives after it must still get the link, and nothing else may have written the row first."""
+    monkeypatch.setattr(mcp, "PREPARE_WAIT_SECONDS", 0.05)
+    backend = FakeBackend()
+    start_oauth = backend.start_oauth
+    backend.start_oauth = lambda name: (time.sleep(0.3) if name == "linear" else None, start_oauth(name))[1]
+    thread_errors = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: thread_errors.append(args.exc_value))
+
+    runner, operation = _runner_for("authorize", backend, "paper", "linear")
+    deadline = time.time() + 2.0
+    while operation.target("linear").state != TargetState.initiated and time.time() < deadline:
+        time.sleep(0.02)
+    runner.close()
+
+    assert thread_errors == []
+    assert [t.state for t in operation.targets] == [TargetState.initiated] * 2
+    assert operation.target("linear").connect_url
+
+
 def test_the_off_desktop_operation_emits_no_connection_update_frames(backend, changes):
     """Off the desktop the operation is in no session's registry, so a frame would reach a
     renderer that knows nothing about it."""
