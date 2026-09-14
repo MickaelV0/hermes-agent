@@ -186,7 +186,7 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
     mints = []
 
     class Client:
-        def connections(self, names, *, reinitiate=False):
+        def connections(self, names, *, reinitiate=False, **_):
             mints.append((tuple(names), reinitiate))
             return {"results": [{"connector": n, "status": "initiated", "connect_url": f"https://l/{n}/2"} for n in names]}
 
@@ -216,7 +216,7 @@ def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch,
     operation.transition("notion", dead, actor, detail="vendor: nope")
 
     class Client:
-        def connections(self, names, *, reinitiate=False):
+        def connections(self, names, *, reinitiate=False, **_):
             return {"results": [{"connector": n, "status": "failed", "status_reason": "vendor: still no"} for n in names]}
 
     monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Client)
@@ -318,3 +318,60 @@ def test_try_again_refuses_an_operation_that_settled_during_the_call(owned):
 
     assert reply["error"]["code"] == 4002
     assert backend.starts == ["linear"]
+
+
+# ---------------------------------------------------------------------------
+# seq and wake (P1-13, the deep-link return)
+# ---------------------------------------------------------------------------
+
+
+def test_every_connection_frame_carries_a_rising_seq(owned):
+    """The renderer orders frames by ``seq``, so no two frames of one operation share one and the
+    status reply is never behind the last frame it sent."""
+    owner, _, _ = owned
+    operation = _open_op()
+    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
+    operation.transition("gmail", TargetState.connected, Actor.backend_watcher)
+    seqs = [update["payload"]["seq"] for update in owner.events("connection.update", expect=2)]
+    assert len(seqs) == len(set(seqs)) and seqs == sorted(seqs)
+    status = _rpc(owner, "connectors.operation.status", op_id=operation.op_id)["result"]
+    assert status["seq"] == seqs[-1]
+
+
+def test_wake_is_owner_only_and_names_a_live_operation(owned):
+    owner, stranger, _ = owned
+    operation = _open_op()
+    assert _rpc(stranger, "connectors.operation.wake", op_id=operation.op_id)["error"]["code"] == 4001
+    assert _rpc(owner, "connectors.operation.wake")["error"]["code"] == 4000
+    assert _rpc(owner, "connectors.operation.wake", op_id="nope")["error"]["code"] == 4004
+    assert not operation.wake.is_set()
+    assert _rpc(owner, "connectors.operation.wake", op_id=operation.op_id)["result"] == {"status": "ok"}
+    assert operation.wake.is_set()
+
+
+def test_a_wake_makes_the_watch_loop_read_before_its_next_tick(owned):
+    """The browser came back from the vendor's done page: read the account now, not a tick from now."""
+    from tools.connectors.contract import SettleReason
+    from tools.connectors.run import Kind, run_operation
+
+    owner, _, _ = owned
+    read = threading.Event()
+    finished = threading.Event()
+
+    def run():
+        run_operation([Target("gmail", "connector", "connect")],
+                      Kind(prepare=lambda operation: None, observe=lambda operation: read.set(), note=""),
+                      session_key=SID, tool_call_id=None, connection_callback=None,
+                      tick_seconds=30.0, with_urls_in_result=False)
+        finished.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert read.wait(2), "the loop reads once before it sleeps"
+    operation = live.current(SID)
+    read.clear()
+
+    assert _rpc(owner, "connectors.operation.wake", op_id=operation.op_id)["result"] == {"status": "ok"}
+    assert read.wait(2), "the wake must not wait out the 30 s tick"
+
+    operation.settle(SettleReason.continue_)
+    assert finished.wait(2)

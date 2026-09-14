@@ -4,29 +4,41 @@
 reads status first and reinitiates only what is not connected (``force`` always reinitiates).
 On a desktop session the call blocks until the operation settles and the result carries no URL;
 the card owns the links. Off the desktop the result carries the URLs and returns at once, until
-PR3 delivers them as their own message. The watcher hook reads the gateway list once per tick
-(the exact-status route replaces this call when the gateway ships it)."""
+PR3 delivers them as their own message. The watcher hook reads one route per pending target:
+that target's own account row, at 1 Hz."""
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.connectors.contract import Actor, TargetState
+from tools.connectors.contract import Actor, TargetState, allowed
 from tools.connectors.gateway.config import operation_session_key, session_platform
-from tools.connectors.operation import ConnectionOperation, Target
+from tools.connectors.gateway.errors import RateLimited
+from tools.connectors.operation import ConnectionOperation, IllegalTransition, Target
 from tools.connectors.run import Kind, run_operation
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# Gateway account statuses that end an attempt (contract: the six-state vocabulary; `pending` and a
-# missing status move nothing). The list's statusReason is generic copy, so the detail recorded at
-# mint time is kept; only a missing detail is filled from the list.
-_TERMINAL_LIST_STATUS = {
-    "failed": TargetState.failed, "expired": TargetState.expired,
-    "revoked": TargetState.failed, "inactive": TargetState.failed,
+# The account route carries its own 180/min budget, so one read per pending target per second stays
+# inside it and still flips the card within a second of the user finishing at the vendor.
+WATCH_TICK_SECONDS = 1.0
+
+# A read never outlives the operation, and never asks for less than one second.
+_MIN_READ_SECONDS = 1.0
+
+# The six-state account vocabulary -> the state that read ends the attempt in, and who caused it.
+# `pending` is not here: it is the attempt still running, and moves nothing.
+_ACCOUNT_OUTCOME: Dict[str, Tuple[TargetState, Actor]] = {
+    "active": (TargetState.connected, Actor.backend_watcher),
+    "failed": (TargetState.failed, Actor.backend_watcher),
+    "revoked": (TargetState.failed, Actor.backend_watcher),
+    "inactive": (TargetState.failed, Actor.backend_watcher),
+    # The link's TTL ran out; the gateway reports it, the clock caused it.
+    "expired": (TargetState.expired, Actor.clock),
 }
 
 NOTE = (
@@ -41,17 +53,21 @@ def _default_client():
     return ConnectorClient()
 
 
-def _status_by_slug(client: Any, *, timeout: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
-    rows = client.list_connectors() if timeout is None else client.list_connectors(timeout=timeout)
-    return {str(i.get("connector", "")).lower(): i for i in rows if isinstance(i, dict)}
+def _status_by_slug(client: Any) -> Dict[str, Dict[str, Any]]:
+    """The toolkit list, by slug. Only the reconnect repair check reads it: it answers "is this app
+    already connected" before any account exists for the watcher to read."""
+    return {str(i.get("connector", "")).lower(): i for i in client.list_connectors() if isinstance(i, dict)}
 
 
 def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reinitiate: bool, actor: Actor) -> None:
     """Mint links for ``names`` and apply the gateway's per-app answer to the operation. ``actor`` is
-    the watcher on the first mint and the user on Try again."""
+    the watcher on the first mint and the user on Try again. The operation id rides along so the
+    vendor's done page can name it on the way back to the desktop."""
+    from tools.connectors.gateway.client import return_to_args
+
     if not names:
         return
-    response = client.connections(names, reinitiate=reinitiate)
+    response = client.connections(names, reinitiate=reinitiate, **return_to_args(op=operation.op_id))
     for entry in response.get("results", []):
         name = str(entry.get("connector") or "").lower()
         target = operation.target(name)
@@ -82,51 +98,52 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
             operation.transition(name, TargetState.failed, Actor.backend_watcher, detail=detail)
 
 
-def _status_for(target: Target, status_by_slug: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The one seam between the watcher and the gateway's status source. Today it is the list walk;
-    the per-account status route replaces this body and nothing else when the gateway ships it."""
-    row = status_by_slug.get(target.name)
-    if row is None:
+def _status_for(client: Any, target: Target, *, timeout: float) -> Optional[Dict[str, Any]]:
+    """The one route the watcher reads: that target's own account row. ``None`` means "nothing to
+    apply this tick" — no account to read, a rate-limit still in force, an account the gateway does
+    not know yet (404 until the deadline), or a read that failed."""
+    if not target.connection_id or time.time() < target.next_read_at:
         return None
-    return {
-        "connected": bool(row.get("connected")),
-        "status": str(row.get("connectionStatus") or "").lower(),
-        "reason": str(row.get("statusReason") or ""),
-    }
+    try:
+        return client.account_status(target.connection_id, timeout=timeout)
+    except RateLimited as exc:
+        # The route is per-principal, so backing off this target alone keeps the others reading.
+        target.next_read_at = time.time() + exc.retry_after
+        return None
+    except Exception as exc:
+        logger.debug("connector account read failed for %s: %s", target.name, exc)
+        return None
 
 
-# A page read never outlives the operation, and never asks for less than one second.
-_MIN_READ_SECONDS = 1.0
+def _apply_read(operation: ConnectionOperation, target: Target, status: str, reason: str) -> None:
+    """Apply one account read to one target. A Continue on the RPC thread can settle the operation
+    between the caller's settled check and this transition; the frozen result stands and the read
+    is dropped."""
+    outcome = _ACCOUNT_OUTCOME.get(status)
+    if outcome is None:
+        return
+    to, actor = outcome
+    try:
+        if allowed(target.kind, target.state, to) is None:
+            # No edge from pending: the read is itself the witness that the attempt started.
+            operation.transition(target.name, TargetState.initiated, Actor.backend_watcher)
+        operation.transition(target.name, to, actor, detail=reason or target.detail)
+    except IllegalTransition:
+        if not operation.settled:
+            raise
 
 
 def _observe(client: Any, operation: ConnectionOperation) -> None:
-    try:
-        status_by_slug = _status_by_slug(client, timeout=max(_MIN_READ_SECONDS, operation.remaining_seconds()))
-    except Exception as exc:
-        logger.debug("connector watch poll failed: %s", exc)
-        return
+    """One account read per live target per tick, sequential: this is the only thread reading them."""
     for target in operation.targets:
         # Only a live attempt (pending, initiated) can be advanced by a gateway read; a failed or expired
         # link waits for the user, and a settled op is frozen.
         if operation.settled or target.state not in (TargetState.pending, TargetState.initiated):
             continue
-        row = _status_for(target, status_by_slug)
+        row = _status_for(client, target, timeout=max(_MIN_READ_SECONDS, operation.remaining_seconds()))
         if row is None:
             continue
-        if target.awaiting_new_attempt:
-            if row["connected"] or row["status"] == "active":
-                continue
-            target.awaiting_new_attempt = False
-        if row["connected"]:
-            if target.state == TargetState.pending:
-                operation.transition(target.name, TargetState.initiated, Actor.backend_watcher)
-            operation.transition(target.name, TargetState.connected, Actor.backend_watcher)
-            continue
-        terminal = _TERMINAL_LIST_STATUS.get(row["status"])
-        if terminal is not None and target.state == TargetState.initiated:
-            # `expired` is the link TTL running out; the gateway reports it, the clock caused it.
-            actor = Actor.clock if terminal == TargetState.expired else Actor.backend_watcher
-            operation.transition(target.name, terminal, actor, detail=target.detail or row["reason"])
+        _apply_read(operation, target, str(row.get("status") or "").lower(), str(row.get("statusReason") or ""))
 
 
 def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOperation], None]:
@@ -136,10 +153,8 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
             mint(client, operation, names, reinitiate=False, actor=Actor.backend_watcher)
             return
         if force:
+            # The re-mint names a new account; the watcher reads that one, never the old row.
             mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher)
-            for target in operation.targets:
-                if target.state == TargetState.initiated:
-                    target.awaiting_new_attempt = True
             return
         status = _status_by_slug(client)
         repair = []
@@ -201,7 +216,7 @@ def run_managed_action(
         return run_operation(
             [Target(n, "connector", action) for n in connectors],
             Kind(prepare=_prepare(client, action, force), observe=lambda op: _observe(client, op), note=NOTE),
-            session_key=session_key, tool_call_id=tool_call_id,
+            session_key=session_key, tool_call_id=tool_call_id, tick_seconds=WATCH_TICK_SECONDS,
             connection_callback=connection_callback, with_urls_in_result=False,
         )
     except Exception as exc:

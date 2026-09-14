@@ -208,6 +208,20 @@ def _(rid, params):
     return _ok(rid, connector_ui_payload(_operation_view(operation)))
 
 
+@method("connectors.operation.wake")
+def _(rid, params):
+    """The desktop came back from the vendor's done page: read the accounts now instead of at the
+    next tick. The link is not trusted for anything else; this only shortens the wait."""
+    owner, error = _owned_session(rid, params)
+    if error:
+        return error
+    operation, error = _live_operation(rid, params, owner)
+    if error:
+        return error
+    operation.wake.set()
+    return _ok(rid, {"status": "ok"})
+
+
 @method("connection.respond")
 def _(rid, params):
     """The card's answer for the operation named by ``op_id``: per target an approval that starts
@@ -236,20 +250,26 @@ def _(rid, params):
     return _ok(rid, {"status": "ok", "settled": operation.settled})
 
 
+def _snapshot_view(snapshot):
+    return {**snapshot, "settled": snapshot.get("settled_at") is not None}
+
+
 def _operation_view(operation):
-    return {**operation.result(), "settled": operation.settled}
+    return _snapshot_view(operation.result())
 
 
-def _connection_update(operation, change=None):
+def _connection_update(operation, change, snapshot):
     """Emit ``connection.update`` for one transition, a link refresh, or settlement. Every frame
-    carries the full target snapshot so the renderer never reconstructs state from deltas."""
+    carries the full target snapshot so the renderer never reconstructs state from deltas. The
+    snapshot was taken under the operation's lock with the ``seq`` it carries, so a frame can never
+    show a state newer than its own seq names."""
     from tui_gateway import server
 
     with server._sessions_lock:
         sid = next((s for s, c in server._sessions.items() if c.get("session_key") == operation.session_key), None)
     if sid is None:
         return
-    payload = _operation_view(operation)
+    payload = _snapshot_view(snapshot)
     if change:
         payload.update(change)
     server._emit("connection.update", sid, payload)

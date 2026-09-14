@@ -6,6 +6,7 @@ A dispatch-local idempotency key permits one execute retry; connections are neve
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import Any, Callable, Optional, Protocol, Sequence
 
@@ -13,6 +14,7 @@ import requests
 from pydantic import ValidationError
 
 from tools.connectors.gateway import wire
+from tools.connectors.gateway.config import session_platform
 from tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
@@ -24,7 +26,7 @@ from tools.connectors.gateway.merge import PlannedCall
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ConnectorClient", "Transport"]
+__all__ = ["ConnectorClient", "Transport", "return_to_args"]
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 EXECUTE_TIMEOUT_SECONDS = 60.0
@@ -141,10 +143,13 @@ class ConnectorClient:
         page = self._parse(wire.ConnectorAccountsResponse, self._request("GET", path, None), "connector accounts")
         return [row.model_dump(by_alias=True) for row in page.accounts]
 
-    def account_status(self, connection_id: str) -> Optional[dict[str, Any]]:
-        """One account's row; ``None`` when the gateway no longer knows it. A 429 raises ``RateLimited``."""
+    def account_status(
+        self, connection_id: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    ) -> Optional[dict[str, Any]]:
+        """One account's row; ``None`` when the gateway no longer knows it. A 429 raises ``RateLimited``.
+        ``timeout`` is the watcher's remaining deadline, so a stalled read cannot outlive its operation."""
         try:
-            payload = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None)
+            payload = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None, timeout=timeout)
         except GatewayUnavailable as exc:
             if exc.code == "connection_not_found":
                 return None
@@ -259,6 +264,19 @@ class ConnectorClient:
 
         assert last_error is not None
         raise last_error
+
+
+def return_to_args(*, op: Optional[str] = None) -> dict[str, Any]:
+    """The ``returnTo`` / ``op`` arguments a connect or execute call carries so the vendor's done page
+    can send the browser back to the app that asked for the connection.
+
+    Only the desktop registers a URL scheme for that return, so every other surface sends neither
+    field and keeps the vendor's own done page. The dev build registers ``hermes-dev://`` instead, and
+    announces itself to its backend with ``HERMES_DESKTOP_DEV_SERVER``."""
+    if session_platform() != "desktop":
+        return {}
+    target = "hermes-desktop-dev" if os.environ.get("HERMES_DESKTOP_DEV_SERVER") else "hermes-desktop"
+    return {"return_to": target, "op": op} if op else {"return_to": target}
 
 
 def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:

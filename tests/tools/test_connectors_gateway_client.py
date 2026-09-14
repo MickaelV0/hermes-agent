@@ -379,3 +379,37 @@ def test_list_honours_a_caller_timeout_per_page():
     transport = FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None}))
     make_client(transport).list_connectors(timeout=2.5)
     assert transport.requests[0]["timeout"] == 2.5
+
+
+# ---------------------------------------------------------------------------
+# return to the surface that asked (portal PR 2.6)
+# ---------------------------------------------------------------------------
+
+
+def test_a_desktop_execute_rides_the_return_target_home(monkeypatch):
+    """A CONNECTION_REQUIRED link minted during an execute must come back to the app, so the call
+    names the return target. It names no operation: an execute has none to return to."""
+    from tools.connectors.gateway import bridge, client
+
+    monkeypatch.setattr(client, "session_platform", lambda: "desktop")
+    monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
+    transport = FakeTransport(FakeResponse(200, execute_envelope([{"data": 1}, {"data": 2}])))
+    bridge.run_remote(
+        [plan for plan in planned()], "dispatch-1",
+        availability=lambda: True, client_factory=lambda: make_client(transport),
+    )
+    body = transport.requests[0]["json"]
+    assert body["returnTo"] == "hermes-desktop"
+    assert "op" not in body
+
+
+def test_an_execute_off_the_desktop_names_no_return_target(monkeypatch):
+    from tools.connectors.gateway import bridge, client
+
+    monkeypatch.setattr(client, "session_platform", lambda: "cli")
+    transport = FakeTransport(FakeResponse(200, execute_envelope([{"data": 1}, {"data": 2}])))
+    bridge.run_remote(
+        [plan for plan in planned()], "dispatch-1",
+        availability=lambda: True, client_factory=lambda: make_client(transport),
+    )
+    assert "returnTo" not in transport.requests[0]["json"]

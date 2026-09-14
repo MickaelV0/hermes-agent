@@ -111,7 +111,7 @@ def changes(monkeypatch):
     """Every transition the operation emits, through the hook the gateway installs."""
     recorded = []
     monkeypatch.setattr(op.ConnectionOperation, "on_change",
-                        staticmethod(lambda operation, change: recorded.append(change)))
+                        staticmethod(lambda operation, change, snapshot: recorded.append(change)))
     return recorded
 
 

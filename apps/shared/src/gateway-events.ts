@@ -379,6 +379,9 @@ export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'insta
 export interface ConnectionRequestPayload {
   deadline_at: number
   op_id: string
+  /** Monotonic write counter for this operation. A frame whose seq is not higher than the one the
+   *  renderer already holds for the op is an older frame and must not move a row. */
+  seq: number
   /** Live target snapshots: links minted up front ride here, the model result never sees them. */
   targets: ConnectionOperationTarget[]
   timeout_seconds?: number
@@ -414,6 +417,8 @@ export interface ConnectionOperationTarget {
 export interface ConnectionOperationStatus {
   deadline_at: number
   op_id: string
+  /** Monotonic write counter for this operation; see `ConnectionRequestPayload.seq`. */
+  seq: number
   settled: boolean
   settled_at?: null | number
   settled_by?: ConnectionSettleReason | null
