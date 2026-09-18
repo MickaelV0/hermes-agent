@@ -735,6 +735,47 @@ class VoiceReceiver:
         self._running = True
         logger.info("VoiceReceiver started (bot_ssrc=%d)", self._bot_ssrc)
 
+    def reattach_crypto(self) -> bool:
+        """Refresh cached NaCl/DAVE/ssrc after a discord.py voice WS reconnect.
+
+        Discord issues a new secret_key (and often a new SSRC). Decrypt with the
+        join-time copies fails silently past the first 10 packets — STT dies while
+        TTS still works (playback reads ``conn.secret_key`` live).
+        """
+        conn = getattr(self._vc, "_connection", None)
+        if conn is None:
+            return False
+        try:
+            raw_key = conn.secret_key
+            if raw_key is None:
+                return False
+            new_key = bytes(raw_key)
+        except Exception:
+            return False
+        if len(new_key) < 32:
+            return False
+        try:
+            new_ssrc = int(getattr(conn, "ssrc", self._bot_ssrc) or 0)
+        except (TypeError, ValueError):
+            new_ssrc = int(self._bot_ssrc or 0)
+        new_dave = getattr(conn, "dave_session", None)
+        if (
+            new_key == self._secret_key
+            and new_ssrc == int(self._bot_ssrc or 0)
+            and new_dave is self._dave_session
+        ):
+            return False
+        self._secret_key = new_key
+        self._bot_ssrc = new_ssrc
+        self._dave_session = new_dave
+        with self._lock:
+            self._decoders.clear()
+            self._buffers.clear()
+            self._last_packet_time.clear()
+        self._packet_debug_count = 0
+        logger.info("VoiceReceiver reattached after voice reconnect (bot_ssrc=%d)", self._bot_ssrc)
+        return True
+
     def stop(self):
         """Stop listening and clean up."""
         self._running = False
@@ -777,6 +818,10 @@ class VoiceReceiver:
                     receiver_self.map_ssrc(int(ssrc), int(user_id))
             if original_hook:
                 await original_hook(ws, msg)
+            # READY (2) / SESSION_DESCRIPTION (4): discord.py already applied ssrc/key
+            # before this hook; refresh the cached copies so UDP decrypt keeps working.
+            if isinstance(msg, dict) and msg.get("op") in (2, 4):
+                receiver_self.reattach_crypto()
         conn.hook = wrapped_hook
         try:
             from discord.utils import MISSING
@@ -836,13 +881,28 @@ class VoiceReceiver:
         nonce = bytearray(24)
         nonce[:4] = payload_with_nonce[-4:]
         encrypted = bytes(payload_with_nonce[:-4])
+        decrypted = None
         try:
             import nacl.secret  # noqa: E402 — delayed import, only in voice path
+            if self._secret_key is None:
+                raise RuntimeError("voice secret_key missing")
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
-            if self._packet_debug_count <= 10:
-                logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
+            retried = False
+            if self.reattach_crypto() and self._secret_key is not None:
+                try:
+                    import nacl.secret  # noqa: E402
+                    box = nacl.secret.Aead(self._secret_key)
+                    decrypted = box.decrypt(encrypted, header, bytes(nonce))
+                    retried = True
+                except Exception as e2:
+                    e = e2
+            if not retried:
+                if self._packet_debug_count <= 10:
+                    logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
+                return
+        if decrypted is None:
             return
         # Skip encrypted extension data to get the actual opus payload
         if ext_data_len and len(decrypted) > ext_data_len:
@@ -3812,6 +3872,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             vc._connection.send_packet(b'\xf8\xff\xfe')
                     except Exception:
                         pass
+                # discord.py already reconnects the voice WS (1006 etc.); refresh
+                # cached crypto if the secret_key/ssrc rotated during that handshake.
+                receiver.reattach_crypto()
                 completed = receiver.check_silence()
                 # Pass guild so role checks stay guild-scoped.
                 _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None

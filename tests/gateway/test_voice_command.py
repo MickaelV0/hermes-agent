@@ -516,6 +516,36 @@ class TestVoiceReceiver:
         receiver.start()
         assert receiver._running is True
 
+    def test_reattach_crypto_refreshes_stale_key(self):
+        receiver = self._make_receiver()
+        receiver.start()
+        old = receiver._secret_key
+        receiver._buffers[100] = bytearray(b"\x00" * 16)
+        receiver._vc._connection.secret_key = [1] * 32
+        receiver._vc._connection.ssrc = 4242
+        assert receiver.reattach_crypto() is True
+        assert receiver._secret_key == bytes([1] * 32)
+        assert receiver._secret_key != old
+        assert receiver._bot_ssrc == 4242
+        assert len(receiver._buffers) == 0
+
+    def test_reattach_crypto_noop_when_unchanged(self):
+        receiver = self._make_receiver()
+        receiver.start()
+        assert receiver.reattach_crypto() is False
+        assert receiver._secret_key == bytes([0] * 32)
+
+    @pytest.mark.asyncio
+    async def test_speaking_hook_reattaches_on_session_description(self):
+        receiver = self._make_receiver()
+        receiver.start()
+        receiver._vc._connection.secret_key = [2] * 32
+        receiver._vc._connection.ssrc = 7
+        hook = receiver._vc._connection.hook
+        await hook(MagicMock(), {"op": 4, "d": {}})
+        assert receiver._secret_key == bytes([2] * 32)
+        assert receiver._bot_ssrc == 7
+
 
     def test_map_ssrc_overwrites(self):
         receiver = self._make_receiver()
