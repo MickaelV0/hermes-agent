@@ -126,6 +126,10 @@ async def play_autonomous_voice(adapter, text: str) -> bool:
         if not result.get("success") or not actual_paths:
             logger.warning("Autonomous voice TTS failed: %s", result.get("error"))
             return False
+        # play_in_voice_channel is silent on success and this lane's failure mode IS silence:
+        # without a log the operator cannot tell "spoke" from "never fired".
+        logger.info("[Discord] Playing autonomous TTS in voice channel (guild=%s, files=%d)",
+                    guild_id, len(actual_paths))
         for path in actual_paths:
             await play(guild_id, path)
         return True
