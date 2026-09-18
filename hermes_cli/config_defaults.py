@@ -1141,6 +1141,11 @@ DEFAULT_CONFIG = {
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
         "max_recording_seconds": 120,
         "auto_tts": False,
+        # Speak CRON finals (cron jobs, proactive heartbeats) in a joined voice channel. Those
+        # lanes deliver without a MessageEvent, so the turn pipeline's auto_tts gate can never
+        # see them. Off by default: a gateway may own several jobs and every one of them would
+        # start talking the moment the bot joins a VC.
+        "auto_tts_cron": False,
         # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over
         # authenticated REST at session start) instead of relaying via the gateway.
         "client_direct": True,
