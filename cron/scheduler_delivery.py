@@ -1392,6 +1392,40 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
         enabled=t.mirror_this_target and not thread_seeded and not inchannel_seeded)
 
 
+def _autonomous_voice_enabled() -> bool:
+    """``voice.auto_tts_cron``: speak cron finals in a joined voice channel. Default OFF — the
+    gateway may own several jobs, and every one of them would start talking the moment the bot
+    joins a VC."""
+    try:
+        from hermes_cli.config import load_config
+        return bool((load_config().get("voice") or {}).get("auto_tts_cron", False))
+    except Exception:
+        return False
+
+
+def _speak_autonomous_delivery(t: _TargetDelivery, text: str) -> None:
+    """Mirror an already-delivered cron final into the adapter's voice channel (fire-and-forget).
+
+    Cron delivery never builds a ``MessageEvent``, so the turn pipeline's auto-TTS gate
+    (``gateway/run_voice.py`` ``_should_send_voice_reply``) is structurally unreachable from here.
+    Scheduled on the gateway loop because the adapter and its voice client live there; never
+    awaited, because the text is already delivered and voice is strictly best-effort."""
+    if not _autonomous_voice_enabled():
+        return
+    adapter, loop = t.runtime_adapter, t.loop
+    if adapter is None or loop is None:
+        return
+    try:
+        from agent.async_utils import safe_schedule_threadsafe
+        from gateway.run_voice import play_autonomous_voice
+        safe_schedule_threadsafe(
+            play_autonomous_voice(adapter, text), loop, logger=logger,
+            log_message=f"Job '{t.job['id']}': autonomous voice scheduling failed",
+            log_level=logging.WARNING)
+    except Exception as exc:
+        logger.debug("Job '%s': autonomous voice skipped: %s", t.job.get("id"), exc)
+
+
 def _deliver_via_live_adapter(
     t: _TargetDelivery, cleaned_text: str, media_files: list, *, target_errors: list,
     delivery_errors: list, unverified_targets: list,
@@ -1449,6 +1483,8 @@ def _deliver_via_live_adapter(
                 delivered_message_id if delivered_message_id is not None else "-")
             delivered = True
             _seed_live_delivery_sessions(t, delivered_message_id)
+            if text_to_send:
+                _speak_autonomous_delivery(t, text_to_send)
     except Exception as e:
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
         if not any(err_msg in err for err in target_errors):

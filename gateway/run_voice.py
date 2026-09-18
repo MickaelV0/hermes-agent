@@ -85,6 +85,59 @@ def oralize_for_discord_vc(text: str) -> str:
     return _truncate_spoken(stripped)
 
 
+async def play_autonomous_voice(adapter, text: str) -> bool:
+    """Speak an autonomous final in the adapter's joined voice channel; True when audio played.
+
+    The turn pipeline's auto-TTS (``_should_send_voice_reply``) is indexed on a ``MessageEvent``,
+    so every lane that delivers WITHOUT a turn — cron jobs, proactive heartbeats — can never reach
+    it. This is the event-free equivalent: VC only (never a voice bubble in text, same rule as
+    ``play_tts``), a no-op when the bot is not in a channel, and best-effort by construction — the
+    caller has ALREADY delivered the text, so a TTS failure must never fail that delivery.
+    """
+    if not (text or "").strip():
+        return False
+    getter = getattr(adapter, "connected_voice_guild_id", None)
+    play = getattr(adapter, "play_in_voice_channel", None)
+    if not callable(getter) or not callable(play):
+        return False  # platform has no voice channel concept
+    guild_id = None
+    with suppress(Exception):
+        guild_id = getter()
+    if guild_id is None:
+        return False  # not in a VC: stay silent, the text lane already spoke
+    audio_path, actual_paths = None, []
+    try:
+        from tools.tts_tool import text_to_speech_tool
+        # Same rewrite as the turn path: an autonomous final is written prose (lists, paths,
+        # counts) and reads badly aloud verbatim.
+        spoken = await asyncio.to_thread(oralize_for_discord_vc, text)
+        if not spoken:
+            return False
+        audio_path = build_auto_tts_output_path(getattr(adapter, "platform", None))
+        raw = await asyncio.to_thread(text_to_speech_tool, text=spoken, output_path=audio_path)
+        try:
+            result = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Autonomous voice TTS returned invalid JSON: %s",
+                           raw[:200] if raw else raw)
+            return False
+        candidates = result.get("file_paths") or [result.get("file_path", audio_path)]
+        actual_paths = [str(p) for p in candidates if p and os.path.isfile(p)]
+        if not result.get("success") or not actual_paths:
+            logger.warning("Autonomous voice TTS failed: %s", result.get("error"))
+            return False
+        for path in actual_paths:
+            await play(guild_id, path)
+        return True
+    except Exception as exc:
+        logger.warning("Autonomous voice playback failed: %s", exc, exc_info=True)
+        return False
+    finally:
+        for p in ({audio_path, *actual_paths} - {None}):
+            with suppress(OSError):
+                os.unlink(p)
+
+
 class GatewayVoiceMixin:
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
@@ -426,9 +479,14 @@ class GatewayVoiceMixin:
         already called text_to_speech this turn, or voice input + base adapter auto-TTS handled it
         — UNLESS streaming consumed the response (already_sent): then the runner must do it.
 
-        Discord exception: if the bot is already in a VC, finals from *any* Discord chat (cron,
-        heartbeat, #home, …) also get auto-TTS in that stream. Default text delivery is unchanged.
-        Silence markers and a bare ``OK`` stay quiet."""
+        Discord exception: if the bot is already in a VC, a TURN's final from *any* Discord chat
+        (#home, a DM, …) gets auto-TTS in that stream, whatever this chat's voice_mode. Default
+        text delivery is unchanged. Silence markers and a bare ``OK`` stay quiet.
+
+        Scope: this gate is reachable ONLY from the turn pipeline (`run_turn.py`
+        `_hmwa_deliver_turn_response`), because it is indexed on ``event.source``. Lanes that
+        deliver without a turn — cron jobs, proactive heartbeats — never arrive here; they speak
+        through ``play_autonomous_voice`` instead."""
         if not response or response.startswith("Error:"):
             return False
         from gateway.response_filters import (
