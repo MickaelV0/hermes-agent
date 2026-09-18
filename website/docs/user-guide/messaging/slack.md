@@ -348,9 +348,12 @@ tool), Slack renders it as **Block Kit buttons** — one tap per option, plus an
 "✏️ Other…" button that switches to free-text mode (your next typed message
 becomes the answer). After a tap, the message updates in place to show who
 answered and what was chosen; further clicks on the same prompt are ignored.
-Button clicks honor the same user authorization as messages, and expired
-prompts (gateway restart, timeout) tell you to re-ask instead of silently
-eating the click. Open-ended clarify questions render as a plain question and
+Button clicks honor the same user authorization as messages. When the prompt
+times out (`agent.clarify_timeout`), the session is reset, or you reply with
+free text instead of tapping a button, the card is rewritten in place without
+its buttons ("⏳ This prompt expired…" or "↩️ Clarification cancelled…"); a
+click on a card orphaned by a gateway restart still tells you to re-ask
+instead of silently eating the click. Open-ended clarify questions render as a plain question and
 accept your next typed reply. No configuration needed — this works regardless
 of the `rich_blocks` setting.
 
@@ -596,6 +599,9 @@ platforms:
   recoverable reason (API error, rate limit), Hermes falls back to a single continuously edited text message so
   progress stays live for the turn. A relay egress refusal of the destination
   is not recoverable and suppresses progress for the turn.
+- If Slack closes a stream during a long turn, Hermes opens a fresh card in
+  the same thread with the current task list and keeps updating there. The
+  previous card remains visible.
 - The card stream is stopped exactly once when the turn finalizes, including
   on interrupt/disconnect, so no dangling live indicator is left behind.
 
