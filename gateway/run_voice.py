@@ -62,6 +62,25 @@ def _truncate_spoken(text: str, limit: int = 500) -> str:
     return cut.rsplit(" ", 1)[0].strip() or cut
 
 
+def _finish_reason(response) -> str:
+    try:
+        return str(getattr(response.choices[0], "finish_reason", "") or "")
+    except Exception:
+        return ""
+
+
+def _drop_dangling_sentence(text: str) -> str:
+    """Cut back to the last completed sentence: what follows it is a truncation artifact.
+
+    Keeps the whole compacted text when nothing useful is completed — a three-word stub read
+    aloud is worse than one clipped sentence (same floor as ``_truncate_spoken``)."""
+    compact = " ".join((text or "").split())
+    idx = max((compact.rfind(c) for c in ".!?;"), default=-1)
+    if idx >= 40:
+        return compact[: idx + 1].strip()
+    return _truncate_spoken(compact)
+
+
 def oralize_for_discord_vc(text: str) -> str:
     """Rewrite a written agent final into a short spoken FR script. Fallback = stripped prose."""
     from tools.tts_text_normalize import _strip_markdown_for_tts
@@ -79,6 +98,15 @@ def oralize_for_discord_vc(text: str) -> str:
         )
         spoken = _aux_reply_text(response)
         if spoken:
+            # max_tokens is a runaway guard, not a shaping tool (the shaping is _ORAL_SYS).
+            # When the CAP is what stopped the model, the tail is a dangling fragment and TTS
+            # would read it out mid-word. The failure path below already trims on a sentence
+            # boundary; the success path must not be sloppier than it.
+            if _finish_reason(response) == "length":
+                logger.warning(
+                    "Discord VC oral rewrite hit max_tokens (%d chars); dropping the dangling tail",
+                    len(spoken))
+                return _drop_dangling_sentence(spoken)
             return spoken
     except Exception as exc:
         logger.warning("Discord VC oral rewrite failed; using stripped prose: %s", exc)
